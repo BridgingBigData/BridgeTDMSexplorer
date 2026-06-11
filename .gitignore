@@ -1,0 +1,15 @@
+.DS_Store
+.Rhistory
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.streamlit/
+
+# Sensor data and generated caches are intentionally kept out of source control.
+*.tdms
+cache/
+
+# Local Python environments.
+.venv/
+venv/
+env/
