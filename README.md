@@ -34,6 +34,10 @@ On startup the sidebar shows the detected filename time range. Use the
 combine. The plots, events, trends, summaries, and health checks are computed
 over that combined selection.
 
+Use the sidebar `View` selector to switch between pages. Only the selected view
+is computed, which keeps display-setting changes responsive on large TDMS
+selections.
+
 ## Anomaly Detection
 
 The app includes an explainable first-pass anomaly workflow:

@@ -182,6 +182,11 @@ def cached_behavior_shifts(
     )
 
 
+@st.cache_data(show_spinner=False)
+def cached_plot_gaps(paths: tuple[str, ...], threshold_seconds: float) -> pd.DataFrame:
+    return detect_plot_gaps(load_combined(paths).samples, threshold_seconds)
+
+
 def main() -> None:
     st.title("Bridge TDMS Explorer")
 
@@ -319,7 +324,28 @@ def main() -> None:
                 help="Positive time gaps above this threshold are treated as discontinuities in plots.",
             )
 
-        gaps = detect_plot_gaps(combined.samples, float(gap_threshold_seconds))
+        page = st.radio(
+            "View",
+            [
+                "Files",
+                "Raw Signals",
+                "Event Detection",
+                "Correlation Groups",
+                "Anomaly Review",
+                "Trends",
+                "Sensor Health",
+            ],
+            help="Only the selected view is computed. This keeps display changes from recomputing every model and plot.",
+        )
+
+        needs_gaps = page == "Files" or (
+            show_data_gaps and page in {"Raw Signals", "Event Detection", "Trends"}
+        )
+        gaps = (
+            cached_plot_gaps(selected_paths, float(gap_threshold_seconds))
+            if needs_gaps
+            else _empty_gaps()
+        )
 
     metadata_cols = st.columns(6)
     metadata_cols[0].metric("Normal files", len(included_files))
@@ -340,19 +366,7 @@ def main() -> None:
         "Analysis excludes version copies and decimated files."
     )
 
-    tab_files, tab_raw, tab_events, tab_groups, tab_anomalies, tab_trends, tab_health = st.tabs(
-        [
-            "Files",
-            "Raw Signals",
-            "Event Detection",
-            "Correlation Groups",
-            "Anomaly Review",
-            "Trends",
-            "Sensor Health",
-        ]
-    )
-
-    with tab_files:
+    if page == "Files":
         st.subheader("Selected Normal Files")
         st.caption(
             "These are the normal TDMS recordings included in the current analysis range. "
@@ -383,7 +397,7 @@ def main() -> None:
         )
         st.dataframe(gaps, use_container_width=True, hide_index=True)
 
-    with tab_raw:
+    elif page == "Raw Signals":
         st.subheader("Raw Signals Across Selected Time Range")
         st.caption(
             "Use raw signals for close inspection of waveforms. For long ranges, the plot is downsampled for speed; summaries and trend calculations still use the full selected data."
@@ -470,7 +484,7 @@ def main() -> None:
         st.subheader("Combined Channel Summary")
         st.dataframe(cached_summary(selected_paths), use_container_width=True, hide_index=True)
 
-    with tab_events:
+    elif page == "Event Detection":
         st.subheader("Traffic, Impact, and Drawbridge-Operation Event Detection")
         st.caption(
             "Events start as rolling-RMS bursts, then are classified as traffic/vibration, boat collision or impact candidates, or drawbridge-operation-like events. "
@@ -586,7 +600,7 @@ def main() -> None:
         with st.expander("Raw channel-level event detections"):
             st.dataframe(raw_events, use_container_width=True, hide_index=True)
 
-    with tab_groups:
+    elif page == "Correlation Groups":
         st.subheader("Correlated Sensor Channel Groups")
         st.caption(
             "Groups are discovered from channels whose selected metric moves together over the selected time range. "
@@ -626,10 +640,10 @@ def main() -> None:
                 hide_index=True,
             )
 
-    with tab_anomalies:
+    elif page == "Anomaly Review":
         st.subheader("Anomaly Review and Reportable Shifts")
         st.caption(
-            "This tab separates raw event candidates from reportable behavior shifts. "
+            "This view separates raw event candidates from reportable behavior shifts. "
             "A shift is reported only when at least three channels in the same correlated group show compatible abnormal movement."
         )
         anomaly_cols = st.columns(2)
@@ -690,7 +704,7 @@ def main() -> None:
                 use_container_width=True,
             )
 
-    with tab_trends:
+    elif page == "Trends":
         st.subheader("Windowed Trends Across Selected Time Range")
         st.caption(
             "Trends aggregate each channel into fixed time windows. Use RMS, standard deviation, or peak-to-peak for traffic/vibration intensity; use mean for baseline drift or thermal patterns."
@@ -778,7 +792,7 @@ def main() -> None:
             fig.update_layout(height=420)
             st.plotly_chart(fig, use_container_width=True)
 
-    with tab_health:
+    elif page == "Sensor Health":
         st.subheader("Sensor Health Across Selected Files")
         st.caption(
             "Health flags highlight channels that may need skepticism before interpretation, such as inactive sensors, flatlines, or extreme bridge values."

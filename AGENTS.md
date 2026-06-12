@@ -63,7 +63,7 @@ The sidebar scans the selected TDMS folder, reports the detected filename
 timestamp range, and exposes explicit start/end date and time inputs. All
 selected normal files are parsed and combined into one time-indexed dataset.
 
-The main tabs are:
+The main sidebar views are:
 
 - `Files`: selected normal files, ignored files, and sensor catalog.
 - `Raw Signals`: downsampled raw signal plots over the selected range.
