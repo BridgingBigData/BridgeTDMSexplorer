@@ -30,9 +30,9 @@ The app opens against the current folder by default:
 ```
 
 On startup the sidebar shows the detected filename time range. Use the
-`Analysis time range` slider to choose the files to combine. The plots,
-events, trends, summaries, and health checks are computed over that combined
-selection.
+`Analysis Time Range` start/end date and time inputs to choose the files to
+combine. The plots, events, trends, summaries, and health checks are computed
+over that combined selection.
 
 ## Anomaly Detection
 
