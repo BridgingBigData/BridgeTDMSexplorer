@@ -4,6 +4,7 @@ from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 
+import numpy as np
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
@@ -34,6 +35,16 @@ METRIC_GUIDANCE = {
     "min": "Lowest sample value in the window.",
     "max": "Highest sample value in the window.",
 }
+
+EVENT_COLORS = {
+    "Boat collision / impact candidate": "#e11d48",
+    "Drawbridge operation-like event": "#7c3aed",
+    "Group-confirmed behavior shift": "#111827",
+    "Group-supported traffic/vibration event": "#f59e0b",
+    "Single/few-channel traffic-like event": "#fbbf24",
+}
+
+DEFAULT_EVENT_COLOR = "#64748b"
 
 
 st.set_page_config(
@@ -293,6 +304,22 @@ def main() -> None:
                 0.05,
                 help="Channels with absolute correlation above this value are connected into groups. Lower values create larger groups; higher values create stricter groups.",
             )
+        with st.expander("Display Settings", expanded=False):
+            show_data_gaps = st.checkbox(
+                "Show data gaps",
+                value=True,
+                help="Break plotted lines and shade discontinuities between files or missing periods.",
+            )
+            gap_threshold_seconds = st.number_input(
+                "Gap threshold seconds",
+                min_value=0.1,
+                max_value=3600.0,
+                value=2.0,
+                step=0.5,
+                help="Positive time gaps above this threshold are treated as discontinuities in plots.",
+            )
+
+        gaps = detect_plot_gaps(combined.samples, float(gap_threshold_seconds))
 
     metadata_cols = st.columns(6)
     metadata_cols[0].metric("Normal files", len(included_files))
@@ -349,6 +376,13 @@ def main() -> None:
         st.subheader("Sensor Catalog Across Selection")
         st.dataframe(combined.sensor_catalog, use_container_width=True, hide_index=True)
 
+        st.subheader("Detected Gaps")
+        st.caption(
+            "Positive timestamp gaps above the display threshold are treated as plot discontinuities. "
+            "They are shaded in charts when data-gap display is enabled."
+        )
+        st.dataframe(gaps, use_container_width=True, hide_index=True)
+
     with tab_raw:
         st.subheader("Raw Signals Across Selected Time Range")
         st.caption(
@@ -373,9 +407,40 @@ def main() -> None:
                 1_000,
                 help="Controls visual downsampling only. Raise it for more detail; lower it for faster plotting over long time ranges.",
             )
+            overlay_raw_events = st.checkbox(
+                "Overlay detected events",
+                value=False,
+                help="Add translucent event bands to the raw signal plot.",
+            )
+            raw_overlay_families = []
+            raw_overlay_events = pd.DataFrame()
+            if overlay_raw_events:
+                raw_overlay_events = cached_event_families(
+                    selected_paths,
+                    channels,
+                    corr_metric,
+                    corr_window,
+                    min_abs_corr,
+                    int(group_min_channels),
+                    5,
+                    4.0,
+                    3.0,
+                )
+                raw_overlay_families = st.multiselect(
+                    "Raw plot event overlays",
+                    sorted(raw_overlay_events["event_family"].unique())
+                    if not raw_overlay_events.empty
+                    else [],
+                    default=sorted(raw_overlay_events["event_family"].unique())
+                    if not raw_overlay_events.empty
+                    else [],
+                    help="Choose which event families to show as vertical bands on the raw signal plot.",
+                )
             plot_data = _downsample(
                 combined.samples[["timestamp", "source_file", *channels]], max_points
             )
+            if show_data_gaps:
+                plot_data = insert_plot_breaks(plot_data, gaps, channels)
             long = plot_data.melt(
                 id_vars=["timestamp", "source_file"],
                 var_name="channel",
@@ -389,6 +454,15 @@ def main() -> None:
                 hover_data=["source_file"],
             )
             fig.update_layout(height=560, legend_title_text="")
+            if show_data_gaps:
+                add_gap_bands(fig, gaps)
+            if overlay_raw_events and raw_overlay_families:
+                add_event_overlays(
+                    fig,
+                    raw_overlay_events[
+                        raw_overlay_events["event_family"].isin(raw_overlay_families)
+                    ],
+                )
             st.plotly_chart(fig, use_container_width=True)
         else:
             st.info("Select one or more channels.")
@@ -461,6 +535,15 @@ def main() -> None:
         st.subheader("Classified Event Families")
         st.dataframe(event_families, use_container_width=True, hide_index=True)
         if not event_families.empty:
+            st.subheader("Event Timeline")
+            st.caption(
+                "Each lane groups events by family. Bars span event duration and hover text shows support and severity details."
+            )
+            st.plotly_chart(
+                event_timeline_figure(event_families),
+                use_container_width=True,
+            )
+
             family_counts = event_families.groupby("event_family", as_index=False).size()
             fig = px.bar(
                 family_counts,
@@ -495,6 +578,8 @@ def main() -> None:
             )
             fig = px.line(long_event_data, x="timestamp", y="value", color="channel")
             fig.add_vrect(x0=event["start"], x1=event["end"], fillcolor="red", opacity=0.18)
+            if show_data_gaps:
+                add_gap_bands(fig, gaps)
             fig.update_layout(height=420)
             st.plotly_chart(fig, use_container_width=True)
 
@@ -594,6 +679,16 @@ def main() -> None:
         st.dataframe(shifts, use_container_width=True, hide_index=True)
         st.subheader("Urgent Boat Collision / Impact Candidates")
         st.dataframe(impact_candidates, use_container_width=True, hide_index=True)
+        anomaly_timeline = anomaly_timeline_events(shifts, impact_candidates, shift_window)
+        if not anomaly_timeline.empty:
+            st.subheader("Anomaly Timeline")
+            st.caption(
+                "Reportable shifts and urgent impact candidates are shown together so multiple events can be reviewed in context."
+            )
+            st.plotly_chart(
+                event_timeline_figure(anomaly_timeline),
+                use_container_width=True,
+            )
 
     with tab_trends:
         st.subheader("Windowed Trends Across Selected Time Range")
@@ -622,13 +717,53 @@ def main() -> None:
             help="Pick how each time window is summarized. The caption below updates with guidance for the selected metric.",
         )
         st.caption(METRIC_GUIDANCE[metric])
+        overlay_trend_events = st.checkbox(
+            "Overlay detected events on trend",
+            value=False,
+            help="Add event-family bands to the trend line plot.",
+        )
+        trend_overlay_events = pd.DataFrame()
+        trend_overlay_families = []
+        if overlay_trend_events:
+            trend_overlay_events = cached_event_families(
+                selected_paths,
+                chosen_trends,
+                corr_metric,
+                corr_window,
+                min_abs_corr,
+                int(group_min_channels),
+                5,
+                4.0,
+                3.0,
+            )
+            trend_overlay_families = st.multiselect(
+                "Trend plot event overlays",
+                sorted(trend_overlay_events["event_family"].unique())
+                if not trend_overlay_events.empty
+                else [],
+                default=sorted(trend_overlay_events["event_family"].unique())
+                if not trend_overlay_events.empty
+                else [],
+                help="Choose which event families to show as vertical bands on the trend plot.",
+            )
         if chosen_trends and not features.empty:
             chart_data = features[features["channel"].isin(chosen_trends)]
+            if show_data_gaps:
+                chart_data = insert_metric_plot_breaks(chart_data, gaps, metric)
             fig = px.line(chart_data, x="timestamp", y=metric, color="channel")
             fig.update_layout(height=520, legend_title_text="")
+            if show_data_gaps:
+                add_gap_bands(fig, gaps)
+            if overlay_trend_events and trend_overlay_families:
+                add_event_overlays(
+                    fig,
+                    trend_overlay_events[
+                        trend_overlay_events["event_family"].isin(trend_overlay_families)
+                    ],
+                )
             st.plotly_chart(fig, use_container_width=True)
 
-            heatmap_data = chart_data.pivot_table(
+            heatmap_data = features[features["channel"].isin(chosen_trends)].pivot_table(
                 index="channel", columns="timestamp", values=metric
             )
             fig = go.Figure(
@@ -660,6 +795,205 @@ def main() -> None:
             use_container_width=True,
             hide_index=True,
         )
+
+
+def detect_plot_gaps(samples: pd.DataFrame, threshold_seconds: float) -> pd.DataFrame:
+    if samples.empty or "timestamp" not in samples:
+        return _empty_gaps()
+    frame = samples[["timestamp", "source_file"]].dropna(subset=["timestamp"]).copy()
+    frame = frame.sort_values("timestamp").reset_index(drop=True)
+    deltas = frame["timestamp"].diff().dt.total_seconds()
+    positive_deltas = deltas[deltas > 0]
+    expected_interval = positive_deltas.quantile(0.10) if not positive_deltas.empty else 0.0
+    expected_threshold = expected_interval * 10 if expected_interval else threshold_seconds
+    gap_threshold = min(threshold_seconds, expected_threshold) if expected_threshold else threshold_seconds
+
+    rows = []
+    for idx in range(1, len(frame)):
+        delta = (frame.loc[idx, "timestamp"] - frame.loc[idx - 1, "timestamp"]).total_seconds()
+        if delta <= 0 or delta <= gap_threshold:
+            continue
+        previous_file = frame.loc[idx - 1, "source_file"]
+        next_file = frame.loc[idx, "source_file"]
+        rows.append(
+            {
+                "gap_start": frame.loc[idx - 1, "timestamp"],
+                "gap_end": frame.loc[idx, "timestamp"],
+                "duration_s": float(delta),
+                "previous_file": previous_file,
+                "next_file": next_file,
+            }
+        )
+    return pd.DataFrame(rows) if rows else _empty_gaps()
+
+
+def insert_plot_breaks(
+    frame: pd.DataFrame, gaps: pd.DataFrame, value_columns: list[str]
+) -> pd.DataFrame:
+    if frame.empty or gaps.empty:
+        return frame
+    break_rows = []
+    for _, gap in gaps.iterrows():
+        row = {column: np.nan for column in value_columns}
+        row["timestamp"] = gap["gap_start"] + pd.Timedelta(microseconds=1)
+        row["source_file"] = "data gap"
+        break_rows.append(row)
+    if not break_rows:
+        return frame
+    return (
+        pd.concat([frame, pd.DataFrame(break_rows)], ignore_index=True)
+        .sort_values("timestamp")
+        .reset_index(drop=True)
+    )
+
+
+def insert_metric_plot_breaks(
+    frame: pd.DataFrame, gaps: pd.DataFrame, metric: str
+) -> pd.DataFrame:
+    if frame.empty or gaps.empty:
+        return frame
+    break_rows = []
+    for channel in sorted(frame["channel"].dropna().unique()):
+        for _, gap in gaps.iterrows():
+            break_rows.append(
+                {
+                    "timestamp": gap["gap_start"] + pd.Timedelta(microseconds=1),
+                    "channel": channel,
+                    metric: np.nan,
+                }
+            )
+    if not break_rows:
+        return frame
+    return (
+        pd.concat([frame, pd.DataFrame(break_rows)], ignore_index=True)
+        .sort_values(["channel", "timestamp"])
+        .reset_index(drop=True)
+    )
+
+
+def add_gap_bands(fig: go.Figure, gaps: pd.DataFrame) -> None:
+    if gaps.empty:
+        return
+    for _, gap in gaps.iterrows():
+        fig.add_vrect(
+            x0=gap["gap_start"],
+            x1=gap["gap_end"],
+            fillcolor="#94a3b8",
+            opacity=0.16,
+            line_width=0,
+            layer="below",
+        )
+
+
+def event_timeline_figure(events: pd.DataFrame) -> go.Figure:
+    if events.empty:
+        fig = go.Figure()
+        fig.update_layout(height=260)
+        return fig
+    timeline = normalize_event_timeline(events)
+    fig = px.timeline(
+        timeline,
+        x_start="start",
+        x_end="end",
+        y="event_family",
+        color="event_family",
+        color_discrete_map=EVENT_COLORS,
+        hover_data=[
+            "priority",
+            "duration_s",
+            "supporting_channels",
+            "same_group_channels",
+            "peak_ratio",
+            "channels",
+            "rationale",
+        ],
+    )
+    fig.update_yaxes(autorange="reversed", title="")
+    fig.update_layout(
+        height=max(320, 78 * timeline["event_family"].nunique()),
+        legend_title_text="",
+        margin={"l": 16, "r": 16, "t": 24, "b": 24},
+    )
+    return fig
+
+
+def normalize_event_timeline(events: pd.DataFrame) -> pd.DataFrame:
+    timeline = events.copy()
+    if "start" not in timeline and "timestamp" in timeline:
+        timeline["start"] = timeline["timestamp"]
+    if "end" not in timeline:
+        timeline["end"] = timeline["start"] + pd.Timedelta(seconds=1)
+    timeline["start"] = pd.to_datetime(timeline["start"])
+    timeline["end"] = pd.to_datetime(timeline["end"])
+    zero_duration = timeline["end"] <= timeline["start"]
+    timeline.loc[zero_duration, "end"] = timeline.loc[zero_duration, "start"] + pd.Timedelta(seconds=1)
+    defaults = {
+        "priority": "",
+        "duration_s": (timeline["end"] - timeline["start"]).dt.total_seconds(),
+        "supporting_channels": np.nan,
+        "same_group_channels": np.nan,
+        "peak_ratio": np.nan,
+        "channels": "",
+        "rationale": "",
+    }
+    for column, default in defaults.items():
+        if column not in timeline:
+            timeline[column] = default
+    return timeline
+
+
+def add_event_overlays(fig: go.Figure, events: pd.DataFrame) -> None:
+    if events.empty:
+        return
+    for _, event in normalize_event_timeline(events).iterrows():
+        family = event["event_family"]
+        fig.add_vrect(
+            x0=event["start"],
+            x1=event["end"],
+            fillcolor=EVENT_COLORS.get(family, DEFAULT_EVENT_COLOR),
+            opacity=event_overlay_opacity(family),
+            line_width=1 if family == "Group-confirmed behavior shift" else 0,
+            line_color="#111827",
+            layer="below",
+        )
+
+
+def event_overlay_opacity(family: str) -> float:
+    if family == "Boat collision / impact candidate":
+        return 0.28
+    if family == "Group-confirmed behavior shift":
+        return 0.22
+    if family == "Drawbridge operation-like event":
+        return 0.18
+    return 0.14
+
+
+def anomaly_timeline_events(
+    shifts: pd.DataFrame, impact_candidates: pd.DataFrame, shift_window: str
+) -> pd.DataFrame:
+    frames = []
+    if not shifts.empty:
+        shift_events = shifts.copy()
+        shift_events["start"] = pd.to_datetime(shift_events["timestamp"])
+        shift_events["end"] = shift_events["start"] + pd.to_timedelta(shift_window)
+        shift_events["priority"] = "reportable"
+        shift_events["duration_s"] = (
+            shift_events["end"] - shift_events["start"]
+        ).dt.total_seconds()
+        shift_events["same_group_channels"] = shift_events["supporting_channels"]
+        shift_events["peak_ratio"] = np.nan
+        frames.append(shift_events)
+    if not impact_candidates.empty:
+        frames.append(impact_candidates.copy())
+    if not frames:
+        return pd.DataFrame()
+    return pd.concat(frames, ignore_index=True, sort=False)
+
+
+def _empty_gaps() -> pd.DataFrame:
+    return pd.DataFrame(
+        columns=["gap_start", "gap_end", "duration_s", "previous_file", "next_file"]
+    )
 
 
 def _merge_catalogs(catalog: pd.DataFrame) -> pd.DataFrame:
