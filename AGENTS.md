@@ -62,6 +62,9 @@ analysis files are expected to look like:
 The sidebar scans the selected TDMS folder, reports the detected filename
 timestamp range, and exposes explicit start/end date and time inputs. All
 selected normal files are parsed and combined into one time-indexed dataset.
+When the selected file set changes, the app displays a main-page progress bar
+with parse/combine status and ETA, then stores the combined dataset in session
+state for responsive view/display changes.
 
 The main sidebar views are:
 

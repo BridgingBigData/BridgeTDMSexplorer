@@ -34,6 +34,10 @@ On startup the sidebar shows the detected filename time range. Use the
 combine. The plots, events, trends, summaries, and health checks are computed
 over that combined selection.
 
+When the selected file set changes, the app shows a main-page progress bar with
+the current parse/combine step and an estimated time remaining. Once the initial
+load is complete, switching display settings and views reuses the warmed dataset.
+
 Use the sidebar `View` selector to switch between pages. Only the selected view
 is computed, which keeps display-setting changes responsive on large TDMS
 selections.

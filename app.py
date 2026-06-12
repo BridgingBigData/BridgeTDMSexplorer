@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -70,7 +71,10 @@ def load_combined(paths: tuple[str, ...]):
     parsed_files = [load_parsed(path) for path in paths]
     if not parsed_files:
         return None
+    return combine_parsed_files(parsed_files)
 
+
+def combine_parsed_files(parsed_files: list) -> SimpleNamespace:
     samples = []
     catalogs = []
     for parsed in parsed_files:
@@ -91,7 +95,7 @@ def load_combined(paths: tuple[str, ...]):
     file_properties = parsed_files[0].file_properties
     group_properties = parsed_files[0].group_properties
     return SimpleNamespace(
-        path=Path(paths[0]),
+        path=parsed_files[0].path,
         sha256="",
         file_properties=file_properties,
         group_properties=group_properties,
@@ -99,6 +103,59 @@ def load_combined(paths: tuple[str, ...]):
         samples=combined_samples,
         file_count=len(parsed_files),
     )
+
+
+def load_combined_with_progress(paths: tuple[str, ...], progress_container=None):
+    signature = selected_paths_signature(paths)
+    if (
+        st.session_state.get("combined_signature") == signature
+        and st.session_state.get("combined_data") is not None
+    ):
+        return st.session_state["combined_data"]
+
+    progress_target = progress_container if progress_container is not None else st
+    progress = progress_target.progress(0.0, text="Preparing selected TDMS files...")
+    started = time.perf_counter()
+    total_files = len(paths)
+    total_mb = sum(Path(path).stat().st_size for path in paths) / (1024 * 1024)
+    initial_estimate_s = max(1.0, total_mb / 18.0)
+    parsed_files = []
+
+    for index, path in enumerate(paths, start=1):
+        elapsed = time.perf_counter() - started
+        if index > 1:
+            avg_s = elapsed / (index - 1)
+            eta_s = avg_s * (total_files - index + 1)
+        else:
+            eta_s = initial_estimate_s
+        progress.progress(
+            min(0.82, (index - 1) / max(total_files, 1) * 0.82),
+            text=(
+                f"Parsing TDMS file {index} of {total_files}: {Path(path).name} "
+                f"(ETA about {format_eta(eta_s)})"
+            ),
+        )
+        parsed_files.append(load_parsed(path))
+
+    progress.progress(0.86, text="Combining parsed samples into one time-indexed dataset...")
+    combined = combine_parsed_files(parsed_files)
+    progress.progress(0.94, text="Building combined sensor catalog and source-file labels...")
+    time.sleep(0.05)
+    progress.progress(
+        1.0,
+        text=(
+            f"Ready: {len(combined.samples):,} rows from {total_files} files "
+            f"in {format_eta(time.perf_counter() - started)}."
+        ),
+    )
+
+    st.session_state["combined_signature"] = signature
+    st.session_state["combined_data"] = combined
+    st.session_state["last_load_message"] = (
+        f"Loaded {len(combined.samples):,} rows from {total_files} files "
+        f"in {format_eta(time.perf_counter() - started)}."
+    )
+    return combined
 
 
 @st.cache_data(show_spinner=False)
@@ -189,6 +246,7 @@ def cached_plot_gaps(paths: tuple[str, ...], threshold_seconds: float) -> pd.Dat
 
 def main() -> None:
     st.title("Bridge TDMS Explorer")
+    startup_progress = st.empty()
 
     with st.sidebar:
         folder = st.text_input(
@@ -204,6 +262,9 @@ def main() -> None:
             help="Refresh the file list after adding, removing, or moving TDMS files.",
         ):
             st.cache_data.clear()
+            st.session_state.pop("combined_signature", None)
+            st.session_state.pop("combined_data", None)
+            st.session_state.pop("last_load_message", None)
             st.session_state.refresh_token += 1
 
         file_table = load_file_table(folder, st.session_state.refresh_token)
@@ -269,7 +330,9 @@ def main() -> None:
             return
 
         selected_paths = tuple(selected_files["path"].tolist())
-        combined = load_combined(selected_paths)
+        combined = load_combined_with_progress(selected_paths, startup_progress)
+        if st.session_state.get("last_load_message"):
+            st.caption(st.session_state["last_load_message"])
         active_catalog = combined.sensor_catalog[combined.sensor_catalog["active"]]
         sensor_types = sorted(
             item for item in active_catalog["sensor_type"].dropna().unique() if item
@@ -1049,6 +1112,25 @@ def _format_duration(delta: pd.Timedelta) -> str:
     minutes, seconds = divmod(seconds, 60)
     if days:
         return f"{days}d {hours}h"
+    if hours:
+        return f"{hours}h {minutes}m"
+    if minutes:
+        return f"{minutes}m {seconds}s"
+    return f"{seconds}s"
+
+
+def selected_paths_signature(paths: tuple[str, ...]) -> tuple[tuple[str, int, int], ...]:
+    signature = []
+    for path in paths:
+        stat = Path(path).stat()
+        signature.append((path, stat.st_size, stat.st_mtime_ns))
+    return tuple(signature)
+
+
+def format_eta(seconds: float) -> str:
+    seconds = max(0, int(round(seconds)))
+    minutes, seconds = divmod(seconds, 60)
+    hours, minutes = divmod(minutes, 60)
     if hours:
         return f"{hours}h {minutes}m"
     if minutes:
