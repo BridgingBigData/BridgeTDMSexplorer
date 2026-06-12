@@ -334,6 +334,9 @@ def main() -> None:
         if st.session_state.get("last_load_message"):
             st.caption(st.session_state["last_load_message"])
         active_catalog = combined.sensor_catalog[combined.sensor_catalog["active"]]
+        traffic_candidates = active_catalog[
+            active_catalog["sensor_type"].isin(["Accelerometer", "Quarterarm", "Half Bridge I"])
+        ]["channel"].tolist()
         sensor_types = sorted(
             item for item in active_catalog["sensor_type"].dropna().unique() if item
         )
@@ -553,9 +556,6 @@ def main() -> None:
             "Events start as rolling-RMS bursts, then are classified as traffic/vibration, boat collision or impact candidates, or drawbridge-operation-like events. "
             "Impact and behavior reports require support from correlated channel groups."
         )
-        traffic_candidates = active_catalog[
-            active_catalog["sensor_type"].isin(["Accelerometer", "Quarterarm", "Half Bridge I"])
-        ]["channel"].tolist()
         event_channels = st.multiselect(
             "Event channels",
             traffic_candidates,
