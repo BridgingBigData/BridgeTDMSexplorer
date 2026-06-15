@@ -244,28 +244,35 @@ def channel_summary(parsed: ParsedTDMS) -> pd.DataFrame:
 def feature_windows(parsed: ParsedTDMS, window: str = "1min") -> pd.DataFrame:
     samples = parsed.samples.set_index("timestamp")
     channels = [col for col in _sample_channels(parsed.samples) if col != "Time"]
-    frames = []
-    for channel in channels:
-        series = samples[channel].dropna()
-        if series.empty:
-            continue
-        grouped = series.resample(window)
-        frame = pd.DataFrame(
-            {
-                "timestamp": grouped.mean().index,
-                "channel": channel,
-                "mean": grouped.mean().to_numpy(),
-                "std": grouped.std(ddof=0).to_numpy(),
-                "min": grouped.min().to_numpy(),
-                "max": grouped.max().to_numpy(),
-                "rms": grouped.apply(lambda x: float(np.sqrt(np.mean(np.square(x))))),
-                "peak_to_peak": grouped.max().to_numpy() - grouped.min().to_numpy(),
-            }
-        )
-        frames.append(frame)
-    if not frames:
+    if not channels:
         return pd.DataFrame()
-    return pd.concat(frames, ignore_index=True)
+
+    values = samples[channels]
+    grouped = values.resample(window)
+    minimum = grouped.min()
+    maximum = grouped.max()
+    metrics = {
+        "mean": grouped.mean(),
+        "std": grouped.std(ddof=0),
+        "min": minimum,
+        "max": maximum,
+        "rms": values.pow(2).resample(window).mean().pow(0.5),
+        "peak_to_peak": maximum - minimum,
+    }
+
+    long_metrics = []
+    for metric_name, metric_frame in metrics.items():
+        metric_frame.columns.name = "channel"
+        long_metrics.append(
+            metric_frame.stack(future_stack=True).rename(metric_name).reset_index()
+        )
+
+    features = long_metrics[0]
+    for metric_frame in long_metrics[1:]:
+        features = features.merge(metric_frame, on=["timestamp", "channel"], how="outer")
+    return features.dropna(
+        subset=["mean", "std", "min", "max", "rms", "peak_to_peak"], how="all"
+    ).reset_index(drop=True)
 
 
 def detect_events(

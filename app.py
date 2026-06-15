@@ -151,6 +151,7 @@ def load_combined_with_progress(paths: tuple[str, ...], progress_container=None)
 
     st.session_state["combined_signature"] = signature
     st.session_state["combined_data"] = combined
+    st.session_state["analysis_cache"] = {}
     st.session_state["last_load_message"] = (
         f"Loaded {len(combined.samples):,} rows from {total_files} files "
         f"in {format_eta(time.perf_counter() - started)}."
@@ -158,44 +159,40 @@ def load_combined_with_progress(paths: tuple[str, ...], progress_container=None)
     return combined
 
 
-@st.cache_data(show_spinner=False)
-def cached_summary(paths: tuple[str, ...]) -> pd.DataFrame:
-    return channel_summary(load_combined(paths))
+def session_cached(key: tuple, compute):
+    cache = st.session_state.setdefault("analysis_cache", {})
+    if key not in cache:
+        cache[key] = compute()
+    return cache[key]
 
 
-@st.cache_data(show_spinner="Computing trend windows...")
-def cached_features(paths: tuple[str, ...], window: str) -> pd.DataFrame:
-    return feature_windows(load_combined(paths), window)
-
-
-@st.cache_data(show_spinner="Checking sensor health...")
-def cached_health(paths: tuple[str, ...]) -> pd.DataFrame:
-    return sensor_health(load_combined(paths))
-
-
-@st.cache_data(show_spinner="Detecting traffic-like events...")
-def cached_events(
-    paths: tuple[str, ...], channels: list[str], window_seconds: int, threshold_sigma: float
-) -> pd.DataFrame:
-    return detect_events(load_combined(paths), channels, window_seconds, threshold_sigma)
-
-
-@st.cache_data(show_spinner="Finding correlated sensor groups...")
-def cached_correlation_groups(
-    paths: tuple[str, ...],
+def get_correlation_result(
+    combined,
+    signature: tuple,
     metric: str,
     window: str,
     min_abs_corr: float,
     min_group_size: int,
 ):
-    return correlation_groups(
-        load_combined(paths), metric, window, min_abs_corr, min_group_size
+    key = (
+        "correlation_groups",
+        signature,
+        metric,
+        window,
+        float(min_abs_corr),
+        int(min_group_size),
+    )
+    return session_cached(
+        key,
+        lambda: correlation_groups(
+            combined, metric, window, min_abs_corr, int(min_group_size)
+        ),
     )
 
 
-@st.cache_data(show_spinner="Classifying traffic, impact, and operation candidates...")
-def cached_event_families(
-    paths: tuple[str, ...],
+def get_event_families(
+    combined,
+    signature: tuple,
     channels: list[str],
     corr_metric: str,
     corr_window: str,
@@ -205,24 +202,45 @@ def cached_event_families(
     threshold_sigma: float,
     impact_ratio: float,
 ) -> pd.DataFrame:
-    combined = load_combined(paths)
-    groups = correlation_groups(
-        combined, corr_metric, corr_window, min_abs_corr, group_min_channels
-    ).groups
-    return classify_event_families(
-        combined,
-        groups,
-        channels,
-        window_seconds,
-        threshold_sigma,
-        impact_ratio,
-        group_min_channels,
+    channel_key = tuple(channels)
+    key = (
+        "event_families",
+        signature,
+        channel_key,
+        corr_metric,
+        corr_window,
+        float(min_abs_corr),
+        int(group_min_channels),
+        int(window_seconds),
+        float(threshold_sigma),
+        float(impact_ratio),
     )
 
+    def compute():
+        groups = get_correlation_result(
+            combined,
+            signature,
+            corr_metric,
+            corr_window,
+            min_abs_corr,
+            int(group_min_channels),
+        ).groups
+        return classify_event_families(
+            combined,
+            groups,
+            channels,
+            int(window_seconds),
+            float(threshold_sigma),
+            float(impact_ratio),
+            int(group_min_channels),
+        )
 
-@st.cache_data(show_spinner="Detecting group-confirmed operation and behavior shifts...")
-def cached_behavior_shifts(
-    paths: tuple[str, ...],
+    return session_cached(key, compute)
+
+
+def get_behavior_shifts(
+    combined,
+    signature: tuple,
     corr_metric: str,
     corr_window: str,
     min_abs_corr: float,
@@ -230,18 +248,31 @@ def cached_behavior_shifts(
     shift_window: str,
     z_threshold: float,
 ) -> pd.DataFrame:
-    combined = load_combined(paths)
-    groups = correlation_groups(
-        combined, corr_metric, corr_window, min_abs_corr, group_min_channels
-    ).groups
-    return detect_operation_and_behavior_shifts(
-        combined, groups, shift_window, z_threshold, group_min_channels
+    key = (
+        "behavior_shifts",
+        signature,
+        corr_metric,
+        corr_window,
+        float(min_abs_corr),
+        int(group_min_channels),
+        shift_window,
+        float(z_threshold),
     )
 
+    def compute():
+        groups = get_correlation_result(
+            combined,
+            signature,
+            corr_metric,
+            corr_window,
+            min_abs_corr,
+            int(group_min_channels),
+        ).groups
+        return detect_operation_and_behavior_shifts(
+            combined, groups, shift_window, float(z_threshold), int(group_min_channels)
+        )
 
-@st.cache_data(show_spinner=False)
-def cached_plot_gaps(paths: tuple[str, ...], threshold_seconds: float) -> pd.DataFrame:
-    return detect_plot_gaps(load_combined(paths).samples, threshold_seconds)
+    return session_cached(key, compute)
 
 
 def main() -> None:
@@ -264,6 +295,7 @@ def main() -> None:
             st.cache_data.clear()
             st.session_state.pop("combined_signature", None)
             st.session_state.pop("combined_data", None)
+            st.session_state.pop("analysis_cache", None)
             st.session_state.pop("last_load_message", None)
             st.session_state.refresh_token += 1
 
@@ -324,6 +356,10 @@ def main() -> None:
             & (included_files["timestamp"] <= pd.Timestamp(selected_end))
         ].copy()
         st.caption(f"Selected {len(selected_files)} file(s).")
+        st.caption(
+            "Time filtering is file-based: the app includes full recordings whose "
+            "filename start timestamp falls inside the selected range."
+        )
 
         if selected_files.empty:
             st.warning("No files fall inside the selected time range.")
@@ -331,6 +367,7 @@ def main() -> None:
 
         selected_paths = tuple(selected_files["path"].tolist())
         combined = load_combined_with_progress(selected_paths, startup_progress)
+        selected_signature = st.session_state["combined_signature"]
         if st.session_state.get("last_load_message"):
             st.caption(st.session_state["last_load_message"])
         active_catalog = combined.sensor_catalog[combined.sensor_catalog["active"]]
@@ -375,6 +412,34 @@ def main() -> None:
                 0.05,
                 help="Channels with absolute correlation above this value are connected into groups. Lower values create larger groups; higher values create stricter groups.",
             )
+        with st.expander("Event Detection Settings", expanded=False):
+            event_window_seconds = st.slider(
+                "RMS window seconds",
+                1,
+                20,
+                5,
+                help="Length of the rolling RMS window. Shorter windows catch sharp bursts; longer windows smooth activity and favor sustained events.",
+            )
+            event_threshold_sigma = st.slider(
+                "Threshold sigma",
+                2.0,
+                8.0,
+                4.0,
+                0.5,
+                help="Sensitivity threshold above background RMS. Lower values find more events and more false positives; higher values keep only stronger bursts.",
+            )
+            event_impact_ratio = st.slider(
+                "Impact severity ratio",
+                1.5,
+                8.0,
+                3.0,
+                0.5,
+                help="A boat collision / impact candidate needs peak RMS at least this many times the event threshold, plus correlated multi-channel support.",
+            )
+            st.caption(
+                "These settings are shared by Event Detection, plot overlays, and "
+                "urgent impact candidates in Anomaly Review."
+            )
         with st.expander("Display Settings", expanded=False):
             show_data_gaps = st.checkbox(
                 "Show data gaps",
@@ -408,7 +473,10 @@ def main() -> None:
             show_data_gaps and page in {"Raw Signals", "Event Detection", "Trends"}
         )
         gaps = (
-            cached_plot_gaps(selected_paths, float(gap_threshold_seconds))
+            session_cached(
+                ("plot_gaps", selected_signature, float(gap_threshold_seconds)),
+                lambda: detect_plot_gaps(combined.samples, float(gap_threshold_seconds)),
+            )
             if needs_gaps
             else _empty_gaps()
         )
@@ -459,7 +527,8 @@ def main() -> None:
         st.subheader("Detected Gaps")
         st.caption(
             "Positive timestamp gaps above the display threshold are treated as plot discontinuities. "
-            "They are shaded in charts when data-gap display is enabled."
+            "They are shaded in charts when data-gap display is enabled. "
+            f"Current display threshold: {float(gap_threshold_seconds):.1f}s."
         )
         st.dataframe(gaps, use_container_width=True, hide_index=True)
 
@@ -495,16 +564,17 @@ def main() -> None:
             raw_overlay_families = []
             raw_overlay_events = pd.DataFrame()
             if overlay_raw_events:
-                raw_overlay_events = cached_event_families(
-                    selected_paths,
+                raw_overlay_events = get_event_families(
+                    combined,
+                    selected_signature,
                     channels,
                     corr_metric,
                     corr_window,
                     min_abs_corr,
                     int(group_min_channels),
-                    5,
-                    4.0,
-                    3.0,
+                    event_window_seconds,
+                    event_threshold_sigma,
+                    event_impact_ratio,
                 )
                 raw_overlay_families = st.multiselect(
                     "Raw plot event overlays",
@@ -548,7 +618,10 @@ def main() -> None:
             st.info("Select one or more channels.")
 
         st.subheader("Combined Channel Summary")
-        st.dataframe(cached_summary(selected_paths), use_container_width=True, hide_index=True)
+        summary = session_cached(
+            ("channel_summary", selected_signature), lambda: channel_summary(combined)
+        )
+        st.dataframe(summary, use_container_width=True, hide_index=True)
 
     elif page == "Event Detection":
         st.subheader("Traffic, Impact, and Drawbridge-Operation Event Detection")
@@ -565,51 +638,47 @@ def main() -> None:
             or traffic_candidates[:4],
             help="Start with accelerometers for traffic/vibration. Add strain or bridge channels to see whether structural response lines up with vibration bursts.",
         )
-        event_cols = st.columns(2)
-        window_seconds = event_cols[0].slider(
-            "RMS window seconds",
-            1,
-            20,
-            5,
-            help="Length of the rolling RMS window. Shorter windows catch sharp bursts; longer windows smooth activity and favor sustained events.",
-        )
-        threshold_sigma = event_cols[1].slider(
-            "Threshold sigma",
-            2.0,
-            8.0,
-            4.0,
-            0.5,
-            help="Sensitivity threshold above background RMS. Lower values find more events and more false positives; higher values keep only stronger bursts.",
-        )
-        impact_ratio = st.slider(
-            "Impact severity ratio",
-            1.5,
-            8.0,
-            3.0,
-            0.5,
-            help="A boat collision / impact candidate needs a peak RMS at least this many times the event threshold, plus three-channel correlated support.",
-        )
+        event_setting_cols = st.columns(3)
+        event_setting_cols[0].metric("RMS window", f"{event_window_seconds}s")
+        event_setting_cols[1].metric("Threshold sigma", f"{event_threshold_sigma:.1f}")
+        event_setting_cols[2].metric("Impact ratio", f"{event_impact_ratio:.1f}x")
         st.caption(
             "Detection rule: subtract a 2-minute rolling median baseline, compute rolling RMS, then flag RMS above "
             "`background + threshold sigma * robust spread`. A boat collision candidate is a short, high-severity, multi-channel response. "
             "A drawbridge-operation-like event is sustained coordinated response across a correlated group."
         )
 
-        raw_events = cached_events(
-            selected_paths, event_channels, window_seconds, threshold_sigma
+        raw_events = session_cached(
+            (
+                "raw_events",
+                selected_signature,
+                tuple(event_channels),
+                int(event_window_seconds),
+                float(event_threshold_sigma),
+            ),
+            lambda: detect_events(
+                combined, event_channels, event_window_seconds, event_threshold_sigma
+            ),
         )
-        event_families = cached_event_families(
-            selected_paths,
+        event_families = get_event_families(
+            combined,
+            selected_signature,
             event_channels,
             corr_metric,
             corr_window,
             min_abs_corr,
             int(group_min_channels),
-            window_seconds,
-            threshold_sigma,
-            impact_ratio,
+            event_window_seconds,
+            event_threshold_sigma,
+            event_impact_ratio,
         )
         st.subheader("Classified Event Families")
+        st.caption(
+            f"Using {event_window_seconds}s RMS windows, threshold sigma "
+            f"{event_threshold_sigma:.1f}, impact ratio {event_impact_ratio:.1f}x, "
+            f"{corr_window} {corr_metric} correlation groups, and "
+            f"{int(group_min_channels)}-channel group support."
+        )
         st.dataframe(event_families, use_container_width=True, hide_index=True)
         if not event_families.empty:
             st.subheader("Event Timeline")
@@ -667,10 +736,11 @@ def main() -> None:
         st.subheader("Correlated Sensor Channel Groups")
         st.caption(
             "Groups are discovered from channels whose selected metric moves together over the selected time range. "
-            "These groups are used to validate reported shifts, requiring at least three agreeing channels by default."
+            f"These groups are used to validate reported shifts, requiring at least {int(group_min_channels)} agreeing channels."
         )
-        corr_result = cached_correlation_groups(
-            selected_paths,
+        corr_result = get_correlation_result(
+            combined,
+            selected_signature,
             corr_metric,
             corr_window,
             min_abs_corr,
@@ -681,6 +751,10 @@ def main() -> None:
         group_cols[1].metric("Basis", corr_metric)
         group_cols[2].metric("Window", corr_window)
         group_cols[3].metric("Min |corr|", f"{min_abs_corr:.2f}")
+        st.caption(
+            "Lower minimum correlation values create broader groups that are more sensitive but less specific. "
+            "Higher values require channels to move together more tightly before they can support the same anomaly."
+        )
         st.dataframe(corr_result.groups, use_container_width=True, hide_index=True)
         if not corr_result.matrix.empty:
             fig = go.Figure(
@@ -724,8 +798,9 @@ def main() -> None:
             0.5,
             help="How far a channel-window must move from its normal distribution before it counts as abnormal. Higher values are stricter.",
         )
-        shifts = cached_behavior_shifts(
-            selected_paths,
+        shifts = get_behavior_shifts(
+            combined,
+            selected_signature,
             corr_metric,
             corr_window,
             min_abs_corr,
@@ -733,16 +808,17 @@ def main() -> None:
             shift_window,
             z_threshold,
         )
-        impact_candidates = cached_event_families(
-            selected_paths,
+        impact_candidates = get_event_families(
+            combined,
+            selected_signature,
             traffic_candidates,
             corr_metric,
             corr_window,
             min_abs_corr,
             int(group_min_channels),
-            5,
-            4.0,
-            3.0,
+            event_window_seconds,
+            event_threshold_sigma,
+            event_impact_ratio,
         )
         impact_candidates = impact_candidates[
             impact_candidates["event_family"].eq("Boat collision / impact candidate")
@@ -751,6 +827,11 @@ def main() -> None:
         review_cols[0].metric("Reportable shifts", len(shifts))
         review_cols[1].metric("Impact candidates", len(impact_candidates))
         review_cols[2].metric("Required channel support", int(group_min_channels))
+        st.caption(
+            f"Shift review uses {shift_window} windows and robust z >= {z_threshold:.1f}. "
+            f"Impact review uses the shared event settings: {event_window_seconds}s RMS, "
+            f"sigma {event_threshold_sigma:.1f}, impact ratio {event_impact_ratio:.1f}x."
+        )
 
         st.subheader("Reportable Operation / Behavior Shifts")
         st.dataframe(shifts, use_container_width=True, hide_index=True)
@@ -778,7 +859,10 @@ def main() -> None:
             index=1,
             help="Aggregation interval. Smaller windows show short events; larger windows reveal hourly or daily patterns.",
         )
-        features = cached_features(selected_paths, trend_window)
+        features = session_cached(
+            ("features", selected_signature, trend_window),
+            lambda: feature_windows(combined, trend_window),
+        )
         trend_channels = active_catalog[
             active_catalog["sensor_type"].isin(selected_types)
         ]["channel"].tolist()
@@ -794,6 +878,10 @@ def main() -> None:
             help="Pick how each time window is summarized. The caption below updates with guidance for the selected metric.",
         )
         st.caption(METRIC_GUIDANCE[metric])
+        st.caption(
+            f"Trend rows are computed with {trend_window} windows over the full selected data. "
+            "Changing chart overlays only changes display bands; it does not change the trend calculations."
+        )
         overlay_trend_events = st.checkbox(
             "Overlay detected events on trend",
             value=False,
@@ -802,16 +890,17 @@ def main() -> None:
         trend_overlay_events = pd.DataFrame()
         trend_overlay_families = []
         if overlay_trend_events:
-            trend_overlay_events = cached_event_families(
-                selected_paths,
+            trend_overlay_events = get_event_families(
+                combined,
+                selected_signature,
                 chosen_trends,
                 corr_metric,
                 corr_window,
                 min_abs_corr,
                 int(group_min_channels),
-                5,
-                4.0,
-                3.0,
+                event_window_seconds,
+                event_threshold_sigma,
+                event_impact_ratio,
             )
             trend_overlay_families = st.multiselect(
                 "Trend plot event overlays",
@@ -860,7 +949,9 @@ def main() -> None:
         st.caption(
             "Health flags highlight channels that may need skepticism before interpretation, such as inactive sensors, flatlines, or extreme bridge values."
         )
-        health = cached_health(selected_paths)
+        health = session_cached(
+            ("sensor_health", selected_signature), lambda: sensor_health(combined)
+        )
         flag_filter = st.multiselect(
             "Flags",
             sorted(health["flags"].unique()),
@@ -879,29 +970,25 @@ def detect_plot_gaps(samples: pd.DataFrame, threshold_seconds: float) -> pd.Data
         return _empty_gaps()
     frame = samples[["timestamp", "source_file"]].dropna(subset=["timestamp"]).copy()
     frame = frame.sort_values("timestamp").reset_index(drop=True)
-    deltas = frame["timestamp"].diff().dt.total_seconds()
-    positive_deltas = deltas[deltas > 0]
+    frame["duration_s"] = frame["timestamp"].diff().dt.total_seconds()
+    positive_deltas = frame.loc[frame["duration_s"] > 0, "duration_s"]
     expected_interval = positive_deltas.quantile(0.10) if not positive_deltas.empty else 0.0
-    expected_threshold = expected_interval * 10 if expected_interval else threshold_seconds
-    gap_threshold = min(threshold_seconds, expected_threshold) if expected_threshold else threshold_seconds
+    expected_threshold = expected_interval * 10 if expected_interval else 0.0
+    gap_threshold = max(float(threshold_seconds), float(expected_threshold))
 
-    rows = []
-    for idx in range(1, len(frame)):
-        delta = (frame.loc[idx, "timestamp"] - frame.loc[idx - 1, "timestamp"]).total_seconds()
-        if delta <= 0 or delta <= gap_threshold:
-            continue
-        previous_file = frame.loc[idx - 1, "source_file"]
-        next_file = frame.loc[idx, "source_file"]
-        rows.append(
-            {
-                "gap_start": frame.loc[idx - 1, "timestamp"],
-                "gap_end": frame.loc[idx, "timestamp"],
-                "duration_s": float(delta),
-                "previous_file": previous_file,
-                "next_file": next_file,
-            }
-        )
-    return pd.DataFrame(rows) if rows else _empty_gaps()
+    gaps = frame.loc[
+        frame["duration_s"] > gap_threshold,
+        ["timestamp", "source_file", "duration_s"],
+    ].copy()
+    if gaps.empty:
+        return _empty_gaps()
+    gaps["gap_start"] = frame["timestamp"].shift().loc[gaps.index]
+    gaps["gap_end"] = gaps["timestamp"]
+    gaps["previous_file"] = frame["source_file"].shift().loc[gaps.index]
+    gaps["next_file"] = gaps["source_file"]
+    return gaps[
+        ["gap_start", "gap_end", "duration_s", "previous_file", "next_file"]
+    ].reset_index(drop=True)
 
 
 def insert_plot_breaks(
