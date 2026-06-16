@@ -10,15 +10,37 @@ from tdms_bridge.parser import (
     sensor_health,
     unique_tdms_files,
 )
+from tdms_bridge.store import ingest_folder
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Summarize bridge TDMS files.")
     parser.add_argument("folder", nargs="?", default=".", help="Folder containing .tdms files")
     parser.add_argument("--cache", action="store_true", help="Write parquet cache files")
+    parser.add_argument(
+        "--ingest",
+        action="store_true",
+        help="Build or update the scalable DuckDB/Parquet cache used by the app",
+    )
     args = parser.parse_args()
 
     folder = Path(args.folder).resolve()
+    if args.ingest:
+        def progress(stage: str, current: int, total: int, message: str) -> None:
+            print(f"[{stage}] {current}/{max(total, 1)} {message}")
+
+        report = ingest_folder(folder, folder / "cache", progress)
+        print(
+            "\nIngestion complete: "
+            f"{report.ingested} ingested, {report.skipped} skipped, "
+            f"{report.failed} failed, {report.ignored} ignored."
+        )
+        if report.messages:
+            print("\nWarnings")
+            for message in report.messages:
+                print(f"- {message}")
+        return
+
     unique_files, file_table = unique_tdms_files(folder)
     print("\nFiles")
     print(file_table.to_string(index=False))

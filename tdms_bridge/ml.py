@@ -23,6 +23,18 @@ def correlation_groups(
     min_group_size: int = 3,
 ) -> CorrelationResult:
     features = feature_windows(parsed, window)
+    return correlation_groups_from_features(
+        features, parsed.sensor_catalog, metric, min_abs_corr, min_group_size
+    )
+
+
+def correlation_groups_from_features(
+    features: pd.DataFrame,
+    catalog: pd.DataFrame,
+    metric: str = "rms",
+    min_abs_corr: float = 0.75,
+    min_group_size: int = 3,
+) -> CorrelationResult:
     if features.empty or metric not in features:
         return CorrelationResult(pd.DataFrame(), pd.DataFrame(), pd.DataFrame())
 
@@ -35,7 +47,7 @@ def correlation_groups(
     matrix = wide.corr(method="spearman").fillna(0.0)
     pairs = _correlation_pairs(matrix)
     groups = _connected_correlation_groups(
-        matrix, parsed.sensor_catalog, min_abs_corr, min_group_size
+        matrix, catalog, min_abs_corr, min_group_size
     )
     return CorrelationResult(matrix, groups, pairs)
 
@@ -51,6 +63,18 @@ def classify_event_families(
     merge_gap_seconds: int = 10,
 ) -> pd.DataFrame:
     events = detect_events(parsed, channels, window_seconds, threshold_sigma)
+    return classify_event_families_from_events(
+        events, groups, impact_ratio, group_min_channels, merge_gap_seconds
+    )
+
+
+def classify_event_families_from_events(
+    events: pd.DataFrame,
+    groups: pd.DataFrame,
+    impact_ratio: float = 3.0,
+    group_min_channels: int = 3,
+    merge_gap_seconds: int = 10,
+) -> pd.DataFrame:
     if events.empty:
         return _empty_event_families()
 
@@ -119,6 +143,17 @@ def detect_operation_and_behavior_shifts(
     group_min_channels: int = 3,
 ) -> pd.DataFrame:
     features = feature_windows(parsed, window)
+    return detect_operation_and_behavior_shifts_from_features(
+        features, groups, z_threshold, group_min_channels
+    )
+
+
+def detect_operation_and_behavior_shifts_from_features(
+    features: pd.DataFrame,
+    groups: pd.DataFrame,
+    z_threshold: float = 3.5,
+    group_min_channels: int = 3,
+) -> pd.DataFrame:
     if features.empty:
         return _empty_shift_table()
 

@@ -3,11 +3,12 @@
 ## Project
 
 Bridge TDMS Explorer is a Streamlit application for inspecting Memorial Bridge
-sensor TDMS files. The app parses normal TDMS recordings, combines selected
-files by filename timestamp, visualizes raw and windowed trends, discovers
-correlated sensor groups, and provides an explainable first-pass anomaly review
-for traffic/vibration, boat collision or impact candidates, drawbridge
-operation-like events, and group-confirmed behavior shifts.
+sensor TDMS files. The app incrementally ingests normal TDMS recordings into a
+local DuckDB/Parquet cache, queries selected time ranges from that cache,
+visualizes raw and windowed trends, discovers correlated sensor groups, and
+provides an explainable first-pass anomaly review for traffic/vibration, boat
+collision or impact candidates, drawbridge operation-like events, and
+group-confirmed behavior shifts.
 
 ## Repository Layout
 
@@ -17,7 +18,10 @@ operation-like events, and group-confirmed behavior shifts.
   reconstruction, summaries, trend features, event detection, and health flags.
 - `tdms_bridge/ml.py`: correlation grouping, event-family classification, and
   group-confirmed behavior-shift detection.
+- `tdms_bridge/store.py`: incremental DuckDB/Parquet ingestion and app query
+  layer.
 - `README.md`: user-facing run notes and workflow summary.
+- `requirements.txt`: Python dependencies, including `duckdb` and `pyarrow`.
 
 ## Run Commands
 
@@ -31,6 +35,12 @@ Build a CLI summary and Parquet cache:
 
 ```bash
 python3 analyze_tdms.py --cache
+```
+
+Build or update the scalable app cache:
+
+```bash
+python3 analyze_tdms.py --ingest
 ```
 
 Basic syntax check:
@@ -59,12 +69,12 @@ analysis files are expected to look like:
 
 ## Current Behavior
 
-The sidebar scans the selected TDMS folder, reports the detected filename
-timestamp range, and exposes explicit start/end date and time inputs. All
-selected normal files are parsed and combined into one time-indexed dataset.
-When the selected file set changes, the app displays a main-page progress bar
-with parse/combine status and ETA, then stores the combined dataset in session
-state for responsive view/display changes.
+On startup, the sidebar scans the selected TDMS folder, ingests new or changed
+normal files into `cache/bridge_index.duckdb` plus partitioned Parquet files,
+reports the cached timestamp range, and exposes explicit start/end date and time
+inputs. The default range is the latest week when more than one week of data is
+available. Views query the local cache instead of combining all selected TDMS
+files in memory.
 
 The main sidebar views are:
 

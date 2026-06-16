@@ -19,6 +19,12 @@ Prototype tools for inspecting Memorial Bridge-style TDMS sensor files.
 
 ## Run The Dashboard
 
+Install the Python dependencies first:
+
+```bash
+python3 -m pip install -r requirements.txt
+```
+
 ```bash
 streamlit run app.py
 ```
@@ -29,14 +35,16 @@ The app opens against the current folder by default:
 /Users/rgandhi/Downloads/tdms_files
 ```
 
-On startup the sidebar shows the detected filename time range. Use the
-`Analysis Time Range` start/end date and time inputs to choose the files to
-combine. The plots, events, trends, summaries, and health checks are computed
-over that combined selection.
+On startup the app scans for new or changed TDMS files and ingests them into a
+local DuckDB/Parquet cache under `cache/`. The sidebar then shows the available
+cached time range. Use the `Analysis Time Range` start/end date and time inputs
+to choose the interval to query. When more than a week of data is available, the
+default launch range is the latest week.
 
-When the selected file set changes, the app shows a main-page progress bar with
-the current parse/combine step and an estimated time remaining. Once the initial
-load is complete, switching display settings and views reuses the warmed dataset.
+Startup progress distinguishes scanning files, ingesting new files, updating the
+index, and ready state. Once ingestion is complete, the app queries only the
+selected time range and requested channels from the local cache instead of
+combining every selected TDMS file in memory.
 
 Use the sidebar `View` selector to switch between pages. Only the selected view
 is computed, which keeps display-setting changes responsive on large TDMS
@@ -60,13 +68,26 @@ movement. This helps avoid false alarms from a noisy or failed single sensor.
 python3 analyze_tdms.py --cache
 ```
 
-This writes Parquet cache files under `cache/`:
+Build or update the scalable app cache:
+
+```bash
+python3 analyze_tdms.py --ingest
+```
+
+The legacy `--cache` command writes per-file Parquet files under `cache/`:
 
 - raw samples
 - sensor catalog
 - channel summary
 - 1-minute trend features
 - sensor health flags
+
+The scalable `--ingest` command writes:
+
+- `cache/bridge_index.duckdb`
+- partitioned raw samples under `cache/samples/`
+- partitioned trend features under `cache/features/`
+- per-file metadata under `cache/metadata/`
 
 ## Notes
 

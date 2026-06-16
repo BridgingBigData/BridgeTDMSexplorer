@@ -1,9 +1,7 @@
 from __future__ import annotations
 
-import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
-from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
@@ -11,18 +9,23 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
-from tdms_bridge.parser import (
-    channel_summary,
-    detect_events,
-    discover_analysis_files,
-    feature_windows,
-    parse_tdms,
-    sensor_health,
-)
 from tdms_bridge.ml import (
-    classify_event_families,
-    correlation_groups,
-    detect_operation_and_behavior_shifts,
+    classify_event_families_from_events,
+    correlation_groups_from_features,
+    detect_operation_and_behavior_shifts_from_features,
+)
+from tdms_bridge.store import (
+    get_available_range,
+    ingest_folder,
+    query_catalog,
+    query_events,
+    query_features,
+    query_file_index,
+    query_health,
+    query_ignored_files,
+    query_samples,
+    query_summary,
+    selected_range_signature,
 )
 
 
@@ -56,109 +59,6 @@ st.set_page_config(
 )
 
 
-@st.cache_data(show_spinner=False)
-def load_file_table(folder: str, refresh_token: int) -> pd.DataFrame:
-    return discover_analysis_files(Path(folder))
-
-
-@st.cache_data(show_spinner="Parsing TDMS file...")
-def load_parsed(path: str):
-    return parse_tdms(Path(path))
-
-
-@st.cache_data(show_spinner="Combining selected TDMS files...")
-def load_combined(paths: tuple[str, ...]):
-    parsed_files = [load_parsed(path) for path in paths]
-    if not parsed_files:
-        return None
-    return combine_parsed_files(parsed_files)
-
-
-def combine_parsed_files(parsed_files: list) -> SimpleNamespace:
-    samples = []
-    catalogs = []
-    for parsed in parsed_files:
-        sample_frame = parsed.samples.copy()
-        sample_frame["source_file"] = parsed.path.name
-        samples.append(sample_frame)
-
-        catalog_frame = parsed.sensor_catalog.copy()
-        catalog_frame["source_file"] = parsed.path.name
-        catalogs.append(catalog_frame)
-
-    combined_samples = (
-        pd.concat(samples, ignore_index=True)
-        .sort_values("timestamp")
-        .reset_index(drop=True)
-    )
-    combined_catalog = _merge_catalogs(pd.concat(catalogs, ignore_index=True))
-    file_properties = parsed_files[0].file_properties
-    group_properties = parsed_files[0].group_properties
-    return SimpleNamespace(
-        path=parsed_files[0].path,
-        sha256="",
-        file_properties=file_properties,
-        group_properties=group_properties,
-        sensor_catalog=combined_catalog,
-        samples=combined_samples,
-        file_count=len(parsed_files),
-    )
-
-
-def load_combined_with_progress(paths: tuple[str, ...], progress_container=None):
-    signature = selected_paths_signature(paths)
-    if (
-        st.session_state.get("combined_signature") == signature
-        and st.session_state.get("combined_data") is not None
-    ):
-        return st.session_state["combined_data"]
-
-    progress_target = progress_container if progress_container is not None else st
-    progress = progress_target.progress(0.0, text="Preparing selected TDMS files...")
-    started = time.perf_counter()
-    total_files = len(paths)
-    total_mb = sum(Path(path).stat().st_size for path in paths) / (1024 * 1024)
-    initial_estimate_s = max(1.0, total_mb / 18.0)
-    parsed_files = []
-
-    for index, path in enumerate(paths, start=1):
-        elapsed = time.perf_counter() - started
-        if index > 1:
-            avg_s = elapsed / (index - 1)
-            eta_s = avg_s * (total_files - index + 1)
-        else:
-            eta_s = initial_estimate_s
-        progress.progress(
-            min(0.82, (index - 1) / max(total_files, 1) * 0.82),
-            text=(
-                f"Parsing TDMS file {index} of {total_files}: {Path(path).name} "
-                f"(ETA about {format_eta(eta_s)})"
-            ),
-        )
-        parsed_files.append(load_parsed(path))
-
-    progress.progress(0.86, text="Combining parsed samples into one time-indexed dataset...")
-    combined = combine_parsed_files(parsed_files)
-    progress.progress(0.94, text="Building combined sensor catalog and source-file labels...")
-    time.sleep(0.05)
-    progress.progress(
-        1.0,
-        text=(
-            f"Ready: {len(combined.samples):,} rows from {total_files} files "
-            f"in {format_eta(time.perf_counter() - started)}."
-        ),
-    )
-
-    st.session_state["combined_signature"] = signature
-    st.session_state["combined_data"] = combined
-    st.session_state["analysis_cache"] = {}
-    st.session_state["last_load_message"] = (
-        f"Loaded {len(combined.samples):,} rows from {total_files} files "
-        f"in {format_eta(time.perf_counter() - started)}."
-    )
-    return combined
-
-
 def session_cached(key: tuple, compute):
     cache = st.session_state.setdefault("analysis_cache", {})
     if key not in cache:
@@ -166,9 +66,12 @@ def session_cached(key: tuple, compute):
     return cache[key]
 
 
-def get_correlation_result(
-    combined,
+def get_correlation_result_from_store(
+    cache_dir: Path,
     signature: tuple,
+    selected_start: datetime,
+    selected_end: datetime,
+    catalog: pd.DataFrame,
     metric: str,
     window: str,
     min_abs_corr: float,
@@ -184,15 +87,22 @@ def get_correlation_result(
     )
     return session_cached(
         key,
-        lambda: correlation_groups(
-            combined, metric, window, min_abs_corr, int(min_group_size)
+        lambda: correlation_groups_from_features(
+            query_features(cache_dir, selected_start, selected_end, window),
+            catalog,
+            metric,
+            min_abs_corr,
+            int(min_group_size),
         ),
     )
 
 
-def get_event_families(
-    combined,
+def get_event_families_from_store(
+    cache_dir: Path,
     signature: tuple,
+    selected_start: datetime,
+    selected_end: datetime,
+    catalog: pd.DataFrame,
     channels: list[str],
     corr_metric: str,
     corr_window: str,
@@ -217,20 +127,28 @@ def get_event_families(
     )
 
     def compute():
-        groups = get_correlation_result(
-            combined,
+        groups = get_correlation_result_from_store(
+            cache_dir,
             signature,
+            selected_start,
+            selected_end,
+            catalog,
             corr_metric,
             corr_window,
             min_abs_corr,
             int(group_min_channels),
         ).groups
-        return classify_event_families(
-            combined,
-            groups,
+        events = query_events(
+            cache_dir,
+            selected_start,
+            selected_end,
             channels,
             int(window_seconds),
             float(threshold_sigma),
+        )
+        return classify_event_families_from_events(
+            events,
+            groups,
             float(impact_ratio),
             int(group_min_channels),
         )
@@ -238,9 +156,12 @@ def get_event_families(
     return session_cached(key, compute)
 
 
-def get_behavior_shifts(
-    combined,
+def get_behavior_shifts_from_store(
+    cache_dir: Path,
     signature: tuple,
+    selected_start: datetime,
+    selected_end: datetime,
+    catalog: pd.DataFrame,
     corr_metric: str,
     corr_window: str,
     min_abs_corr: float,
@@ -260,16 +181,20 @@ def get_behavior_shifts(
     )
 
     def compute():
-        groups = get_correlation_result(
-            combined,
+        groups = get_correlation_result_from_store(
+            cache_dir,
             signature,
+            selected_start,
+            selected_end,
+            catalog,
             corr_metric,
             corr_window,
             min_abs_corr,
             int(group_min_channels),
         ).groups
-        return detect_operation_and_behavior_shifts(
-            combined, groups, shift_window, float(z_threshold), int(group_min_channels)
+        features = query_features(cache_dir, selected_start, selected_end, shift_window)
+        return detect_operation_and_behavior_shifts_from_features(
+            features, groups, float(z_threshold), int(group_min_channels)
         )
 
     return session_cached(key, compute)
@@ -288,62 +213,109 @@ def main() -> None:
         if "refresh_token" not in st.session_state:
             st.session_state.refresh_token = 0
         if st.button(
-            "Rescan folder",
+            "Rescan / ingest new files",
             use_container_width=True,
-            help="Refresh the file list after adding, removing, or moving TDMS files.",
+            help="Refresh the file list and ingest new or changed TDMS files into the local scalable cache.",
         ):
             st.cache_data.clear()
-            st.session_state.pop("combined_signature", None)
-            st.session_state.pop("combined_data", None)
             st.session_state.pop("analysis_cache", None)
             st.session_state.pop("last_load_message", None)
+            st.session_state.pop("ingest_key", None)
+            st.session_state.pop("range_key", None)
             st.session_state.refresh_token += 1
 
-        file_table = load_file_table(folder, st.session_state.refresh_token)
-        if file_table.empty:
-            st.warning("No .tdms files found.")
+        cache_dir = Path(folder).resolve() / "cache"
+        ingest_key = (str(Path(folder).resolve()), st.session_state.refresh_token)
+        if st.session_state.get("ingest_key") != ingest_key:
+            progress = startup_progress.progress(0.0, text="Scanning files...")
+
+            def ingest_progress(stage: str, current: int, total: int, message: str) -> None:
+                denominator = max(total, 1)
+                progress.progress(
+                    min(1.0, max(0.0, current / denominator)),
+                    text=f"{stage}: {message}",
+                )
+
+            try:
+                report = ingest_folder(Path(folder), cache_dir, ingest_progress)
+            except RuntimeError as exc:
+                st.error(str(exc))
+                return
+            progress.progress(
+                1.0,
+                text=(
+                    "Ready: "
+                    f"{report.ingested} ingested, {report.skipped} skipped, "
+                    f"{report.failed} failed."
+                ),
+            )
+            st.session_state["ingest_report"] = report
+            st.session_state["ingest_key"] = ingest_key
+            st.session_state["analysis_cache"] = {}
+
+        report = st.session_state.get("ingest_report")
+        if report:
+            st.caption(
+                f"Scanned {report.scanned} TDMS files. "
+                f"Ingested {report.ingested}, skipped {report.skipped}, "
+                f"failed {report.failed}, ignored {report.ignored}."
+            )
+            if report.messages:
+                with st.expander("Ingestion warnings", expanded=False):
+                    for message in report.messages:
+                        st.warning(message)
+
+        try:
+            min_time, max_time = get_available_range(cache_dir)
+        except RuntimeError as exc:
+            st.error(str(exc))
+            return
+        if min_time is None or max_time is None:
+            st.warning("No successfully ingested normal TDMS files found.")
             return
 
-        included_files = file_table[file_table["included"]].copy()
-        ignored_files = file_table[~file_table["included"]].copy()
-        st.caption(
-            f"Found {len(file_table)} TDMS files. "
-            f"Using {len(included_files)} normal files; ignoring "
-            f"{len(ignored_files)} version/decimate files."
-        )
-        if included_files.empty:
-            st.warning("No non-version, non-decimate TDMS files with filename timestamps found.")
-            return
+        min_time = min_time.to_pydatetime()
+        max_time = max_time.to_pydatetime()
+        default_start = max(min_time, max_time - timedelta(days=7))
+        range_key = (str(cache_dir), min_time, max_time)
+        if st.session_state.get("range_key") != range_key:
+            st.session_state["start_date"] = default_start.date()
+            st.session_state["start_time"] = default_start.time()
+            st.session_state["end_date"] = max_time.date()
+            st.session_state["end_time"] = max_time.time()
+            st.session_state["range_key"] = range_key
 
-        min_time = included_files["timestamp"].min().to_pydatetime()
-        max_time = included_files["timestamp"].max().to_pydatetime()
-        st.markdown("**Detected Filename Time Range**")
+        st.markdown("**Available Cached Time Range**")
         st.caption(f"{min_time:%Y-%m-%d %H:%M:%S} to {max_time:%Y-%m-%d %H:%M:%S}")
 
         with st.expander("Analysis Time Range", expanded=True):
             start_date = st.date_input(
                 "Start date",
-                value=min_time.date(),
+                value=st.session_state["start_date"],
                 min_value=min_time.date(),
                 max_value=max_time.date(),
-                help="First recording start date to include, based on timestamps in file names.",
+                key="start_date_input",
+                help="First recording start date to query from the local cache. The default is the latest week.",
             )
             start_time = st.time_input(
                 "Start time",
-                value=min_time.time(),
-                help="First recording start time to include. Files starting before this time are excluded.",
+                value=st.session_state["start_time"],
+                key="start_time_input",
+                help="First recording start time to query from the local cache.",
             )
             end_date = st.date_input(
                 "End date",
-                value=max_time.date(),
+                value=st.session_state["end_date"],
                 min_value=min_time.date(),
                 max_value=max_time.date(),
-                help="Last recording start date to include, based on timestamps in file names.",
+                key="end_date_input",
+                help="Last recording start date to query from the local cache.",
             )
             end_time = st.time_input(
                 "End time",
-                value=max_time.time(),
-                help="Last recording start time to include. Files starting after this time are excluded.",
+                value=st.session_state["end_time"],
+                key="end_time_input",
+                help="Last recording start time to query from the local cache.",
             )
 
         selected_start = datetime.combine(start_date, start_time)
@@ -351,26 +323,26 @@ def main() -> None:
         if selected_start > selected_end:
             st.error("Start time must be before end time.")
             return
-        selected_files = included_files[
-            (included_files["timestamp"] >= pd.Timestamp(selected_start))
-            & (included_files["timestamp"] <= pd.Timestamp(selected_end))
-        ].copy()
-        st.caption(f"Selected {len(selected_files)} file(s).")
+        selected_files = query_file_index(cache_dir, selected_start, selected_end)
+        selected_files = selected_files[selected_files["status"].eq("ready")].copy()
+        ignored_files = query_ignored_files(cache_dir)
+        st.caption(f"Selected {len(selected_files)} ingested file(s).")
         st.caption(
-            "Time filtering is file-based: the app includes full recordings whose "
-            "filename start timestamp falls inside the selected range."
+            "Time filtering queries the local Parquet/DuckDB cache. Raw TDMS files are "
+            "only parsed when new or changed files are ingested."
         )
 
         if selected_files.empty:
-            st.warning("No files fall inside the selected time range.")
+            st.warning("No ingested files fall inside the selected time range.")
             return
 
-        selected_paths = tuple(selected_files["path"].tolist())
-        combined = load_combined_with_progress(selected_paths, startup_progress)
-        selected_signature = st.session_state["combined_signature"]
-        if st.session_state.get("last_load_message"):
-            st.caption(st.session_state["last_load_message"])
-        active_catalog = combined.sensor_catalog[combined.sensor_catalog["active"]]
+        selected_signature = selected_range_signature(selected_files, selected_start, selected_end)
+        catalog_rows = query_catalog(cache_dir, selected_start, selected_end)
+        if catalog_rows.empty:
+            st.warning("No sensor catalog rows found for this selected range.")
+            return
+        active_catalog = _merge_catalogs(catalog_rows)
+        active_catalog = active_catalog[active_catalog["active"]]
         traffic_candidates = active_catalog[
             active_catalog["sensor_type"].isin(["Accelerometer", "Quarterarm", "Half Bridge I"])
         ]["channel"].tolist()
@@ -475,29 +447,30 @@ def main() -> None:
         gaps = (
             session_cached(
                 ("plot_gaps", selected_signature, float(gap_threshold_seconds)),
-                lambda: detect_plot_gaps(combined.samples, float(gap_threshold_seconds)),
+                lambda: detect_file_index_gaps(selected_files, float(gap_threshold_seconds)),
             )
             if needs_gaps
             else _empty_gaps()
         )
 
     metadata_cols = st.columns(6)
-    metadata_cols[0].metric("Normal files", len(included_files))
+    metadata_cols[0].metric("Cached files", len(query_file_index(cache_dir, min_time, max_time)))
     metadata_cols[1].metric("Selected files", len(selected_files))
     metadata_cols[2].metric("Ignored files", len(ignored_files))
     metadata_cols[3].metric("Active channels", len(active_catalog))
-    metadata_cols[4].metric("Rows", f"{len(combined.samples):,}")
+    metadata_cols[4].metric("Cached rows", f"{int(selected_files['sample_rows'].sum()):,}")
     metadata_cols[5].metric(
         "Selected span",
         _format_duration(
-            combined.samples["timestamp"].max() - combined.samples["timestamp"].min()
+            pd.Timestamp(selected_files["sample_end"].max())
+            - pd.Timestamp(selected_files["sample_start"].min())
         ),
     )
 
     st.caption(
-        "Detected file-name range: "
+        "Cached data range: "
         f"{min_time:%Y-%m-%d %H:%M:%S} to {max_time:%Y-%m-%d %H:%M:%S}. "
-        "Analysis excludes version copies and decimated files."
+        "Analysis excludes version copies and decimated files; new files are added through ingestion."
     )
 
     if page == "Files":
@@ -522,7 +495,7 @@ def main() -> None:
         )
 
         st.subheader("Sensor Catalog Across Selection")
-        st.dataframe(combined.sensor_catalog, use_container_width=True, hide_index=True)
+        st.dataframe(active_catalog, use_container_width=True, hide_index=True)
 
         st.subheader("Detected Gaps")
         st.caption(
@@ -564,9 +537,12 @@ def main() -> None:
             raw_overlay_families = []
             raw_overlay_events = pd.DataFrame()
             if overlay_raw_events:
-                raw_overlay_events = get_event_families(
-                    combined,
+                raw_overlay_events = get_event_families_from_store(
+                    cache_dir,
                     selected_signature,
+                    selected_start,
+                    selected_end,
+                    active_catalog,
                     channels,
                     corr_metric,
                     corr_window,
@@ -586,8 +562,8 @@ def main() -> None:
                     else [],
                     help="Choose which event families to show as vertical bands on the raw signal plot.",
                 )
-            plot_data = _downsample(
-                combined.samples[["timestamp", "source_file", *channels]], max_points
+            plot_data = query_samples(
+                cache_dir, selected_start, selected_end, channels, max_points
             )
             if show_data_gaps:
                 plot_data = insert_plot_breaks(plot_data, gaps, channels)
@@ -619,7 +595,8 @@ def main() -> None:
 
         st.subheader("Combined Channel Summary")
         summary = session_cached(
-            ("channel_summary", selected_signature), lambda: channel_summary(combined)
+            ("channel_summary", selected_signature),
+            lambda: query_summary(cache_dir, selected_start, selected_end),
         )
         st.dataframe(summary, use_container_width=True, hide_index=True)
 
@@ -656,13 +633,21 @@ def main() -> None:
                 int(event_window_seconds),
                 float(event_threshold_sigma),
             ),
-            lambda: detect_events(
-                combined, event_channels, event_window_seconds, event_threshold_sigma
+            lambda: query_events(
+                cache_dir,
+                selected_start,
+                selected_end,
+                event_channels,
+                event_window_seconds,
+                event_threshold_sigma,
             ),
         )
-        event_families = get_event_families(
-            combined,
+        event_families = get_event_families_from_store(
+            cache_dir,
             selected_signature,
+            selected_start,
+            selected_end,
+            active_catalog,
             event_channels,
             corr_metric,
             corr_window,
@@ -713,12 +698,11 @@ def main() -> None:
             event_plot_channels = [
                 channel
                 for channel in str(event["channels"]).split(", ")
-                if channel in combined.samples.columns
+                if channel in active_catalog["channel"].tolist()
             ][:8]
-            event_data = combined.samples[
-                (combined.samples["timestamp"] >= span_start)
-                & (combined.samples["timestamp"] <= span_end)
-            ][["timestamp", *event_plot_channels]]
+            event_data = query_samples(
+                cache_dir, span_start, span_end, event_plot_channels
+            )
             long_event_data = event_data.melt(
                 id_vars="timestamp", var_name="channel", value_name="value"
             )
@@ -738,9 +722,12 @@ def main() -> None:
             "Groups are discovered from channels whose selected metric moves together over the selected time range. "
             f"These groups are used to validate reported shifts, requiring at least {int(group_min_channels)} agreeing channels."
         )
-        corr_result = get_correlation_result(
-            combined,
+        corr_result = get_correlation_result_from_store(
+            cache_dir,
             selected_signature,
+            selected_start,
+            selected_end,
+            active_catalog,
             corr_metric,
             corr_window,
             min_abs_corr,
@@ -798,9 +785,12 @@ def main() -> None:
             0.5,
             help="How far a channel-window must move from its normal distribution before it counts as abnormal. Higher values are stricter.",
         )
-        shifts = get_behavior_shifts(
-            combined,
+        shifts = get_behavior_shifts_from_store(
+            cache_dir,
             selected_signature,
+            selected_start,
+            selected_end,
+            active_catalog,
             corr_metric,
             corr_window,
             min_abs_corr,
@@ -808,9 +798,12 @@ def main() -> None:
             shift_window,
             z_threshold,
         )
-        impact_candidates = get_event_families(
-            combined,
+        impact_candidates = get_event_families_from_store(
+            cache_dir,
             selected_signature,
+            selected_start,
+            selected_end,
+            active_catalog,
             traffic_candidates,
             corr_metric,
             corr_window,
@@ -861,7 +854,7 @@ def main() -> None:
         )
         features = session_cached(
             ("features", selected_signature, trend_window),
-            lambda: feature_windows(combined, trend_window),
+            lambda: query_features(cache_dir, selected_start, selected_end, trend_window),
         )
         trend_channels = active_catalog[
             active_catalog["sensor_type"].isin(selected_types)
@@ -890,9 +883,12 @@ def main() -> None:
         trend_overlay_events = pd.DataFrame()
         trend_overlay_families = []
         if overlay_trend_events:
-            trend_overlay_events = get_event_families(
-                combined,
+            trend_overlay_events = get_event_families_from_store(
+                cache_dir,
                 selected_signature,
+                selected_start,
+                selected_end,
+                active_catalog,
                 chosen_trends,
                 corr_metric,
                 corr_window,
@@ -950,7 +946,8 @@ def main() -> None:
             "Health flags highlight channels that may need skepticism before interpretation, such as inactive sensors, flatlines, or extreme bridge values."
         )
         health = session_cached(
-            ("sensor_health", selected_signature), lambda: sensor_health(combined)
+            ("sensor_health", selected_signature),
+            lambda: query_health(cache_dir, selected_start, selected_end),
         )
         flag_filter = st.multiselect(
             "Flags",
@@ -986,6 +983,38 @@ def detect_plot_gaps(samples: pd.DataFrame, threshold_seconds: float) -> pd.Data
     gaps["gap_end"] = gaps["timestamp"]
     gaps["previous_file"] = frame["source_file"].shift().loc[gaps.index]
     gaps["next_file"] = gaps["source_file"]
+    return gaps[
+        ["gap_start", "gap_end", "duration_s", "previous_file", "next_file"]
+    ].reset_index(drop=True)
+
+
+def detect_file_index_gaps(files: pd.DataFrame, threshold_seconds: float) -> pd.DataFrame:
+    if files.empty or "sample_start" not in files or "sample_end" not in files:
+        return _empty_gaps()
+    frame = files[["file", "sample_start", "sample_end"]].dropna().copy()
+    if frame.empty:
+        return _empty_gaps()
+    frame["sample_start"] = pd.to_datetime(frame["sample_start"])
+    frame["sample_end"] = pd.to_datetime(frame["sample_end"])
+    frame = frame.sort_values("sample_start").reset_index(drop=True)
+    frame["previous_end"] = frame["sample_end"].shift()
+    frame["previous_file"] = frame["file"].shift()
+    frame["duration_s"] = (
+        frame["sample_start"] - frame["previous_end"]
+    ).dt.total_seconds()
+    gaps = frame.loc[
+        frame["duration_s"] > float(threshold_seconds),
+        ["previous_end", "sample_start", "duration_s", "previous_file", "file"],
+    ].copy()
+    if gaps.empty:
+        return _empty_gaps()
+    gaps = gaps.rename(
+        columns={
+            "previous_end": "gap_start",
+            "sample_start": "gap_end",
+            "file": "next_file",
+        }
+    )
     return gaps[
         ["gap_start", "gap_end", "duration_s", "previous_file", "next_file"]
     ].reset_index(drop=True)
@@ -1199,25 +1228,6 @@ def _format_duration(delta: pd.Timedelta) -> str:
     minutes, seconds = divmod(seconds, 60)
     if days:
         return f"{days}d {hours}h"
-    if hours:
-        return f"{hours}h {minutes}m"
-    if minutes:
-        return f"{minutes}m {seconds}s"
-    return f"{seconds}s"
-
-
-def selected_paths_signature(paths: tuple[str, ...]) -> tuple[tuple[str, int, int], ...]:
-    signature = []
-    for path in paths:
-        stat = Path(path).stat()
-        signature.append((path, stat.st_size, stat.st_mtime_ns))
-    return tuple(signature)
-
-
-def format_eta(seconds: float) -> str:
-    seconds = max(0, int(round(seconds)))
-    minutes, seconds = divmod(seconds, 60)
-    hours, minutes = divmod(minutes, 60)
     if hours:
         return f"{hours}h {minutes}m"
     if minutes:
