@@ -18,6 +18,8 @@ group-confirmed behavior shifts.
   reconstruction, summaries, trend features, event detection, and health flags.
 - `tdms_bridge/ml.py`: correlation grouping, event-family classification, and
   group-confirmed behavior-shift detection.
+- `tdms_bridge/locations.py`: BDI sensor-label decoding and Plotly placement
+  schematics for bridge/tower sensor locations.
 - `tdms_bridge/store.py`: incremental DuckDB/Parquet ingestion and app query
   layer.
 - `README.md`: user-facing run notes and workflow summary.

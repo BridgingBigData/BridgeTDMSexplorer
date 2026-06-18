@@ -14,6 +14,12 @@ from tdms_bridge.ml import (
     correlation_groups_from_features,
     detect_operation_and_behavior_shifts_from_features,
 )
+from tdms_bridge.locations import (
+    enrich_sensor_catalog,
+    event_channels,
+    sensor_location_figure,
+    sensor_location_table,
+)
 from tdms_bridge.store import (
     get_available_range,
     ingest_folder,
@@ -361,6 +367,7 @@ def main() -> None:
             return
         active_catalog = _merge_catalogs(catalog_rows)
         active_catalog = active_catalog[active_catalog["active"]]
+        active_catalog = enrich_sensor_catalog(active_catalog)
         traffic_candidates = active_catalog[
             active_catalog["sensor_type"].isin(["Accelerometer", "Quarterarm", "Half Bridge I"])
         ]["channel"].tolist()
@@ -514,6 +521,16 @@ def main() -> None:
 
         st.subheader("Sensor Catalog Across Selection")
         st.dataframe(active_catalog, use_container_width=True, hide_index=True)
+
+        st.subheader("Sensor Placement Map")
+        st.caption(
+            "Sensor locations are decoded from the BDI installation-plan naming scheme. "
+            "Locations 1-8 are on the south fixed span; locations 9-10 are on the south tower."
+        )
+        st.plotly_chart(
+            sensor_location_figure(active_catalog, title="Decoded Sensor Placement"),
+            use_container_width=True,
+        )
 
         st.subheader("Detected Gaps")
         st.caption(
@@ -715,9 +732,28 @@ def main() -> None:
             span_end = event["end"] + pd.Timedelta(seconds=10)
             event_plot_channels = [
                 channel
-                for channel in str(event["channels"]).split(", ")
+                for channel in event_channels(event)
                 if channel in active_catalog["channel"].tolist()
             ][:8]
+            if event["event_family"] == "Boat collision / impact candidate":
+                st.warning(
+                    "Boat collision / impact candidate: the highlighted sensors show "
+                    "where the strongest supporting channels are physically located."
+                )
+            st.subheader("Selected Event Sensor Locations")
+            st.plotly_chart(
+                sensor_location_figure(
+                    active_catalog,
+                    highlight_channels=event_plot_channels,
+                    title=f"Supporting Sensor Locations - {event['event_family']}",
+                ),
+                use_container_width=True,
+            )
+            st.dataframe(
+                sensor_location_table(active_catalog, event_plot_channels),
+                use_container_width=True,
+                hide_index=True,
+            )
             event_data = query_samples(
                 cache_dir, span_start, span_end, event_plot_channels
             )
@@ -848,6 +884,32 @@ def main() -> None:
         st.dataframe(shifts, use_container_width=True, hide_index=True)
         st.subheader("Urgent Boat Collision / Impact Candidates")
         st.dataframe(impact_candidates, use_container_width=True, hide_index=True)
+        if not impact_candidates.empty:
+            impact_channels = sorted(
+                {
+                    channel
+                    for _, row in impact_candidates.iterrows()
+                    for channel in event_channels(row)
+                }
+            )
+            st.subheader("Impact Candidate Sensor Locations")
+            st.caption(
+                "Highlighted sensors are channels that support one or more urgent "
+                "boat collision / impact candidates in the selected range."
+            )
+            st.plotly_chart(
+                sensor_location_figure(
+                    active_catalog,
+                    highlight_channels=impact_channels,
+                    title="Urgent Impact Candidate Sensor Locations",
+                ),
+                use_container_width=True,
+            )
+            st.dataframe(
+                sensor_location_table(active_catalog, impact_channels),
+                use_container_width=True,
+                hide_index=True,
+            )
         anomaly_timeline = anomaly_timeline_events(shifts, impact_candidates, shift_window)
         if not anomaly_timeline.empty:
             st.subheader("Anomaly Timeline")

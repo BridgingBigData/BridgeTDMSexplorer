@@ -15,6 +15,7 @@ Prototype tools for inspecting Memorial Bridge-style TDMS sensor files.
 - Discovers correlated channel groups from windowed sensor features.
 - Classifies event candidates into traffic/vibration, boat collision / impact, and drawbridge-operation-like families.
 - Reports behavior shifts only when three or more correlated channels agree.
+- Decodes BDI sensor labels into approximate physical bridge locations and highlights supporting sensors for impact candidates.
 - Provides a Streamlit dashboard for exploring files, signals, traffic-like events, trends, and health.
 
 ## Run The Dashboard
@@ -57,6 +58,10 @@ The app includes an explainable first-pass anomaly workflow:
 Behavior shifts are gated by group support. By default, a reported shift requires
 at least three channels in the same correlated group to show compatible abnormal
 movement. This helps avoid false alarms from a noisy or failed single sensor.
+
+Sensor placement maps are decoded from the BDI installation-plan naming scheme.
+Locations 1-8 are on the south fixed span; locations 9-10 are on the south tower.
+Impact-candidate review highlights the sensors supporting those candidate events.
 
 ## Run A CLI Summary
 
