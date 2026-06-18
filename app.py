@@ -641,7 +641,7 @@ def main() -> None:
             "Events start as rolling-RMS bursts, then are classified as traffic/vibration, boat collision or impact candidates, or drawbridge-operation-like events. "
             "Impact and behavior reports require support from correlated channel groups."
         )
-        event_channels = st.multiselect(
+        selected_event_channels = st.multiselect(
             "Event channels",
             traffic_candidates,
             default=[
@@ -664,7 +664,7 @@ def main() -> None:
             (
                 "raw_events",
                 selected_signature,
-                tuple(event_channels),
+                tuple(selected_event_channels),
                 int(event_window_seconds),
                 float(event_threshold_sigma),
             ),
@@ -672,7 +672,7 @@ def main() -> None:
                 cache_dir,
                 selected_start,
                 selected_end,
-                event_channels,
+                selected_event_channels,
                 event_window_seconds,
                 event_threshold_sigma,
             ),
@@ -683,7 +683,7 @@ def main() -> None:
             selected_start,
             selected_end,
             active_catalog,
-            event_channels,
+            selected_event_channels,
             corr_metric,
             corr_window,
             min_abs_corr,
