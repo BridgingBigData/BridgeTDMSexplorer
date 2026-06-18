@@ -28,9 +28,6 @@ from tdms_bridge.store import (
     selected_range_signature,
 )
 
-
-ROOT = Path(__file__).resolve().parent
-
 METRIC_GUIDANCE = {
     "rms": "Root mean square: signal energy in the window. Good for vibration and traffic intensity.",
     "peak_to_peak": "Maximum minus minimum in the window. Good for seeing the size of transient swings.",
@@ -205,11 +202,32 @@ def main() -> None:
     startup_progress = st.empty()
 
     with st.sidebar:
-        folder = st.text_input(
-            "TDMS folder",
-            value=str(ROOT),
-            help="Folder containing TDMS files. The app uses normal data files and ignores version copies and decimated files.",
-        )
+        if "tdms_folder" not in st.session_state:
+            st.session_state["tdms_folder"] = ""
+        with st.form("tdms_folder_form"):
+            folder_entry = st.text_input(
+                "TDMS folder",
+                value=st.session_state["tdms_folder"],
+                placeholder="/path/to/tdms_files",
+                help="Folder containing TDMS files. The app uses normal data files and ignores version copies and decimated files.",
+            )
+            load_folder = st.form_submit_button("Load folder", use_container_width=True)
+        if load_folder:
+            st.session_state["tdms_folder"] = folder_entry.strip()
+            st.session_state.pop("analysis_cache", None)
+            st.session_state.pop("last_load_message", None)
+            st.session_state.pop("ingest_key", None)
+            st.session_state.pop("range_key", None)
+
+        folder = st.session_state["tdms_folder"]
+        if not folder:
+            st.info("Enter a TDMS folder path to begin.")
+            st.caption("The app will scan that folder and build a local cache inside it.")
+            return
+        folder_path = Path(folder).expanduser().resolve()
+        if not folder_path.exists() or not folder_path.is_dir():
+            st.error("The TDMS folder path does not exist or is not a folder.")
+            return
         if "refresh_token" not in st.session_state:
             st.session_state.refresh_token = 0
         if st.button(
@@ -224,8 +242,8 @@ def main() -> None:
             st.session_state.pop("range_key", None)
             st.session_state.refresh_token += 1
 
-        cache_dir = Path(folder).resolve() / "cache"
-        ingest_key = (str(Path(folder).resolve()), st.session_state.refresh_token)
+        cache_dir = folder_path / "cache"
+        ingest_key = (str(folder_path), st.session_state.refresh_token)
         if st.session_state.get("ingest_key") != ingest_key:
             progress = startup_progress.progress(0.0, text="Scanning files...")
 
@@ -237,7 +255,7 @@ def main() -> None:
                 )
 
             try:
-                report = ingest_folder(Path(folder), cache_dir, ingest_progress)
+                report = ingest_folder(folder_path, cache_dir, ingest_progress)
             except RuntimeError as exc:
                 st.error(str(exc))
                 return

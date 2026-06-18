@@ -29,11 +29,7 @@ python3 -m pip install -r requirements.txt
 streamlit run app.py
 ```
 
-The app opens against the current folder by default:
-
-```text
-/Users/rgandhi/Downloads/tdms_files
-```
+On launch, enter the local folder that contains your TDMS files in the sidebar.
 
 On startup the app scans for new or changed TDMS files and ingests them into a
 local DuckDB/Parquet cache under `cache/`. The sidebar then shows the available
