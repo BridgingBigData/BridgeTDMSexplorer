@@ -297,13 +297,14 @@ def main() -> None:
     with st.sidebar:
         if "tdms_folder" not in st.session_state:
             st.session_state["tdms_folder"] = ""
+        st.markdown("**Data Folder**")
+        if not st.session_state["tdms_folder"]:
+            st.caption(
+                "Choose the parent folder that contains TDMS files or daily TDMS subfolders."
+            )
         if st.button(
-            "Browse for TDMS folder...",
+            "Browse for TDMS folder",
             use_container_width=True,
-            help=(
-                "Open the operating system folder picker. Select either the folder "
-                "that contains TDMS files or a parent folder with day-by-day subfolders."
-            ),
         ):
             st.session_state.pop("folder_browser_error", None)
             selected_folder, browser_error = browse_for_tdms_folder(
@@ -317,14 +318,9 @@ def main() -> None:
             st.warning(st.session_state["folder_browser_error"])
         with st.form("tdms_folder_form"):
             folder_entry = st.text_input(
-                "TDMS folder",
+                "Folder path",
                 value=st.session_state["tdms_folder"],
                 placeholder="/path/to/tdms_files",
-                help=(
-                    "Folder containing TDMS files, or a parent folder containing "
-                    "day-by-day subfolders. The app searches recursively, uses normal "
-                    "data files, and ignores version copies and decimated files."
-                ),
             )
             load_folder = st.form_submit_button("Load folder", use_container_width=True)
         if load_folder:
@@ -332,11 +328,7 @@ def main() -> None:
 
         folder = st.session_state["tdms_folder"]
         if not folder:
-            st.info("Choose a TDMS folder to begin.")
-            st.caption(
-                "Use the OS folder browser or enter a path manually. Parent folders "
-                "with daily TDMS subfolders are supported."
-            )
+            st.info("Select a folder to scan.")
             return
         folder_path = Path(folder).expanduser().resolve()
         if not folder_path.exists() or not folder_path.is_dir():
