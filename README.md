@@ -27,16 +27,26 @@ python3 -m pip install -r requirements.txt
 ```
 
 ```bash
-streamlit run app.py
+python3 -m streamlit run app.py
 ```
 
-On launch, enter the local folder that contains your TDMS files in the sidebar.
+Use the same Python environment for both commands. For example, if Streamlit is
+installed in Anaconda, run `/opt/anaconda3/bin/python -m pip install -r
+requirements.txt` and `/opt/anaconda3/bin/python -m streamlit run app.py`.
+
+On launch, use the sidebar folder browser or enter the local folder that contains
+your TDMS files. You can select either a folder with TDMS files directly inside
+it or a parent folder with daily TDMS subfolders.
 
 On startup the app scans for new or changed TDMS files and ingests them into a
 local DuckDB/Parquet cache under `cache/`. The sidebar then shows the available
 cached time range. Use the `Analysis Time Range` start/end date and time inputs
 to choose the interval to query. When more than a week of data is available, the
 default launch range is the latest week.
+
+TDMS discovery is recursive, so a folder organized like `tdms_files/` with
+subfolders such as `tdms_files_2026-06-17_07-00-01/` and
+`tdms_files_2026-06-18_07-00-01/` can be loaded from the parent folder.
 
 Startup progress distinguishes scanning files, ingesting new files, updating the
 index, and ready state. Once ingestion is complete, the app queries only the

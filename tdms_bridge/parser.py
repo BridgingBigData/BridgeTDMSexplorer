@@ -60,9 +60,10 @@ def recording_start_from_name(path: Path) -> datetime | None:
 
 
 def discover_tdms_files(folder: Path) -> list[Path]:
+    folder = Path(folder)
     return sorted(
         path
-        for path in folder.iterdir()
+        for path in folder.rglob("*")
         if path.is_file() and path.suffix.lower() == ".tdms"
     )
 
