@@ -473,6 +473,53 @@ def escape_applescript_text(value: str) -> str:
     return value.replace("\\", "\\\\").replace('"', '\\"')
 
 
+def validate_tdms_folder(folder: str) -> tuple[Path | None, str | None, str | None]:
+    try:
+        folder_path = Path(folder).expanduser().resolve()
+        exists = folder_path.exists()
+        is_dir = folder_path.is_dir() if exists else False
+    except PermissionError:
+        return (
+            None,
+            "The selected TDMS folder cannot be opened because the app does not have permission to access it.",
+            "Choose a folder your user can read, mount the shared folder with read access, or update permissions for this path.",
+        )
+    except OSError as exc:
+        return (
+            None,
+            f"The selected TDMS folder could not be checked: {exc}",
+            "Confirm the path is mounted and reachable, then load the folder again.",
+        )
+
+    if not exists:
+        return (
+            None,
+            "The TDMS folder path does not exist.",
+            "Check the spelling or browse to the folder from the sidebar.",
+        )
+    if not is_dir:
+        return (
+            None,
+            "The TDMS folder path points to a file, not a folder.",
+            "Choose the parent folder that contains TDMS files or daily TDMS subfolders.",
+        )
+    try:
+        next(folder_path.iterdir(), None)
+    except PermissionError:
+        return (
+            None,
+            "The selected TDMS folder exists, but the app cannot read its contents.",
+            "Choose a folder your user can read, mount the shared folder with read access, or update permissions for this path.",
+        )
+    except OSError as exc:
+        return (
+            None,
+            f"The selected TDMS folder could not be opened: {exc}",
+            "Confirm the path is mounted and reachable, then load the folder again.",
+        )
+    return folder_path, None, None
+
+
 def main() -> None:
     st.title("Bridge TDMS Explorer")
     startup_progress = st.empty()
@@ -513,10 +560,16 @@ def main() -> None:
         if not folder:
             st.info("Select a folder to scan.")
             return
-        folder_path = Path(folder).expanduser().resolve()
-        if not folder_path.exists() or not folder_path.is_dir():
-            st.error("The TDMS folder path does not exist or is not a folder.")
+        folder_path, folder_error, folder_suggestion = validate_tdms_folder(folder)
+        if folder_error:
+            st.error(folder_error)
+            if folder_suggestion:
+                st.caption(folder_suggestion)
+            startup_progress.warning(
+                f"{folder_error} {folder_suggestion or ''}".strip()
+            )
             return
+        assert folder_path is not None
         if "refresh_token" not in st.session_state:
             st.session_state.refresh_token = 0
         if st.button(
