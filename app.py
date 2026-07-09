@@ -534,7 +534,7 @@ def main() -> None:
             )
         if st.button(
             "Browse for TDMS folder",
-            width="stretch",
+            use_container_width=True,
         ):
             st.session_state.pop("folder_browser_error", None)
             selected_folder, browser_error = browse_for_tdms_folder(
@@ -552,7 +552,7 @@ def main() -> None:
                 value=st.session_state["tdms_folder"],
                 placeholder="/path/to/tdms_files",
             )
-            load_folder = st.form_submit_button("Load folder", width="stretch")
+            load_folder = st.form_submit_button("Load folder", use_container_width=True)
         if load_folder:
             set_tdms_folder(folder_entry)
 
@@ -574,7 +574,7 @@ def main() -> None:
             st.session_state.refresh_token = 0
         if st.button(
             "Rescan / ingest new files",
-            width="stretch",
+            use_container_width=True,
             help="Refresh the file list and ingest new or changed TDMS files into the local scalable cache.",
         ):
             st.cache_data.clear()
@@ -663,7 +663,7 @@ def main() -> None:
                 index=2,
                 help="Choose a common range, then apply it to the start and end controls below.",
             )
-            if st.button("Apply quick range", width="stretch"):
+            if st.button("Apply quick range", use_container_width=True):
                 if range_preset == "Latest hour":
                     set_time_range(
                         max(min_time_eastern, max_time_eastern - timedelta(hours=1)),
@@ -923,7 +923,7 @@ def main() -> None:
         show_placement_plan_link(folder_path)
         st.plotly_chart(
             sensor_location_figure(active_catalog, title="Decoded Sensor Placement"),
-            width="stretch",
+            use_container_width=True,
         )
 
         st.subheader("Detected Gaps")
@@ -1069,7 +1069,7 @@ def main() -> None:
                         raw_overlay_events["event_family"].isin(raw_overlay_families)
                     ],
                 )
-            st.plotly_chart(fig, width="stretch")
+            st.plotly_chart(fig, use_container_width=True)
         else:
             st.info("Select one or more channels or rosette groups.")
 
@@ -1187,7 +1187,7 @@ def main() -> None:
             )
             st.plotly_chart(
                 event_timeline_figure(event_families),
-                width="stretch",
+                use_container_width=True,
             )
 
             family_counts = event_families.groupby("event_family", as_index=False).size()
@@ -1198,7 +1198,7 @@ def main() -> None:
                 labels={"size": "events"},
             )
             fig.update_layout(height=360)
-            st.plotly_chart(fig, width="stretch")
+            st.plotly_chart(fig, use_container_width=True)
 
             selected_event = st.selectbox(
                 "Inspect classified event",
@@ -1229,7 +1229,7 @@ def main() -> None:
                     highlight_channels=event_plot_channels,
                     title=f"Supporting Sensor Locations - {event['event_family']}",
                 ),
-                width="stretch",
+                use_container_width=True,
             )
             show_dataframe(sensor_location_table(active_catalog, event_plot_channels))
             if event_plot_channels:
@@ -1259,7 +1259,7 @@ def main() -> None:
                 if show_data_gaps:
                     add_gap_bands(fig, gaps)
                 fig.update_layout(height=420)
-                st.plotly_chart(fig, width="stretch")
+                st.plotly_chart(fig, use_container_width=True)
             else:
                 show_empty_state(
                     "No supporting channels from this event are available in the active catalog.",
@@ -1322,7 +1322,7 @@ def main() -> None:
                 )
             )
             fig.update_layout(height=680)
-            st.plotly_chart(fig, width="stretch")
+            st.plotly_chart(fig, use_container_width=True)
         with st.expander("Strongest channel pairs"):
             if corr_result.pairs.empty:
                 show_empty_state(
@@ -1454,7 +1454,7 @@ def main() -> None:
                     highlight_channels=impact_channels,
                     title="Urgent Impact Candidate Sensor Locations",
                 ),
-                width="stretch",
+                use_container_width=True,
             )
             show_dataframe(sensor_location_table(active_catalog, impact_channels))
         anomaly_timeline = anomaly_timeline_events(shifts_display, impact_candidates, shift_window)
@@ -1465,7 +1465,7 @@ def main() -> None:
             )
             st.plotly_chart(
                 event_timeline_figure(anomaly_timeline),
-                width="stretch",
+                use_container_width=True,
             )
 
     elif page == "Trends":
@@ -1606,7 +1606,7 @@ def main() -> None:
                         trend_overlay_events["event_family"].isin(trend_overlay_families)
                     ],
                 )
-            st.plotly_chart(fig, width="stretch")
+            st.plotly_chart(fig, use_container_width=True)
 
             heatmap_frame = with_bridge_timestamp(
                 features[features["channel"].isin(chosen_trends)]
@@ -1624,7 +1624,7 @@ def main() -> None:
                 )
             )
             fig.update_layout(height=420)
-            st.plotly_chart(fig, width="stretch")
+            st.plotly_chart(fig, use_container_width=True)
         elif not chosen_trends:
             show_empty_state(
                 "No trend channels or rosette groups are selected.",
@@ -1949,7 +1949,7 @@ def show_dataframe(frame: pd.DataFrame, **kwargs) -> None:
     display = bridge_display_frame(frame)
     st.dataframe(
         display,
-        width="stretch",
+        use_container_width=True,
         hide_index=True,
         column_config=dataframe_config(display),
         **kwargs,
@@ -1965,7 +1965,7 @@ def download_dataframe(label: str, frame: pd.DataFrame, filename: str) -> None:
         data=export.to_csv(index=False).encode("utf-8"),
         file_name=filename,
         mime="text/csv",
-        width="stretch",
+        use_container_width=True,
     )
 
 
