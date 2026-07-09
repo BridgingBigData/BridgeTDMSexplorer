@@ -61,11 +61,11 @@ def decode_sensor_location(channel: str) -> dict:
         decoded["orientation_code"] = orientation
         return decoded
 
-    guide_post = re.match(r"^VGP_(\d+)_([TB])$", channel)
+    guide_post = re.match(r"^VG[PT]_(\d+)_([TB])$", channel)
     if guide_post:
         member, face = guide_post.groups()
         return {
-            "sensor_family": "Vertical guide post half bridge",
+            "sensor_family": "TTDS vertical guide post half bridge",
             "longitudinal_location": 9,
             "side_of_bridge": "Tower guide post",
             "side_code": "VGP",

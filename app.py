@@ -49,6 +49,8 @@ EVENT_COLORS = {
     "Boat collision / impact candidate": "#e11d48",
     "Drawbridge operation-like event": "#7c3aed",
     "Group-confirmed behavior shift": "#111827",
+    "Rosette-confirmed behavior shift": "#0f766e",
+    "Rosette-confirmed operation-like shift": "#14b8a6",
     "Group-supported traffic/vibration event": "#f59e0b",
     "Single/few-channel traffic-like event": "#fbbf24",
 }
@@ -66,6 +68,9 @@ TIME_DISPLAY_COLUMNS = (
     "gap_start",
     "gap_end",
 )
+ROSETTE_ORIENTATION_ORDER = {"H": 0, "V": 1, "D": 2}
+ROSETTE_ORIENTATION_LABELS = {"H": "Horizontal", "V": "Vertical", "D": "Diagonal"}
+PLACEMENT_PLAN_PDF = "UNH_MemorialBridge_InstPlan_V3_FieldInstall.pdf"
 
 REVIEW_WORKFLOW = [
     "Files",
@@ -304,6 +309,113 @@ def with_bridge_timestamp(frame: pd.DataFrame, column: str = "timestamp") -> pd.
     display = frame.copy()
     display[f"{column}_eastern"] = utc_series_to_bridge_time(display[column])
     return display
+
+
+def rosette_group_catalog(catalog: pd.DataFrame) -> pd.DataFrame:
+    if catalog.empty or "sensor_family" not in catalog:
+        return pd.DataFrame(
+            columns=[
+                "label",
+                "group_key",
+                "channels",
+                "channels_display",
+                "longitudinal_location",
+                "side_of_bridge",
+                "sensor_designation",
+            ]
+        )
+    rosettes = catalog[
+        catalog["sensor_family"].eq("Rosette strain gage")
+        & catalog["active"].fillna(False)
+        & catalog["orientation_code"].isin(ROSETTE_ORIENTATION_ORDER)
+    ].copy()
+    if rosettes.empty:
+        return pd.DataFrame()
+    rows = []
+    group_columns = ["longitudinal_location", "side_code", "sensor_designation"]
+    for (location, side_code, designation), frame in rosettes.groupby(
+        group_columns, dropna=False
+    ):
+        by_orientation = {
+            str(row["orientation_code"]): row["channel"]
+            for _, row in frame.sort_values("channel").iterrows()
+        }
+        if not set(ROSETTE_ORIENTATION_ORDER).issubset(by_orientation):
+            continue
+        channels = [
+            by_orientation[orientation]
+            for orientation in sorted(
+                ROSETTE_ORIENTATION_ORDER,
+                key=ROSETTE_ORIENTATION_ORDER.get,
+            )
+        ]
+        first = frame.iloc[0]
+        location_label = (
+            str(int(location)) if pd.notna(location) else str(location)
+        )
+        side_label = str(first.get("side_of_bridge") or side_code)
+        label = f"Location {location_label} {side_label} Rosette {designation}"
+        rows.append(
+            {
+                "label": label,
+                "group_key": f"SG-{location_label}-{side_code}-R-{designation}",
+                "channels": channels,
+                "channels_display": ", ".join(channels),
+                "longitudinal_location": location,
+                "side_of_bridge": side_label,
+                "sensor_designation": designation,
+                "orientation_set": ", ".join(
+                    ROSETTE_ORIENTATION_LABELS[orientation]
+                    for orientation in ROSETTE_ORIENTATION_ORDER
+                ),
+            }
+        )
+    if not rows:
+        return pd.DataFrame()
+    return pd.DataFrame(rows).sort_values(
+        ["longitudinal_location", "side_of_bridge", "sensor_designation"]
+    )
+
+
+def rosette_channels_for_labels(
+    rosette_groups: pd.DataFrame, selected_labels: list[str]
+) -> list[str]:
+    if rosette_groups.empty or not selected_labels:
+        return []
+    selected = rosette_groups[rosette_groups["label"].isin(selected_labels)]
+    channels: list[str] = []
+    for group_channels in selected["channels"]:
+        channels.extend(group_channels)
+    return list(dict.fromkeys(channels))
+
+
+def selected_rosette_group_table(
+    rosette_groups: pd.DataFrame, selected_labels: list[str]
+) -> pd.DataFrame:
+    if rosette_groups.empty or not selected_labels:
+        return pd.DataFrame()
+    columns = [
+        "label",
+        "channels_display",
+        "longitudinal_location",
+        "side_of_bridge",
+        "sensor_designation",
+        "orientation_set",
+    ]
+    return rosette_groups[rosette_groups["label"].isin(selected_labels)][columns]
+
+
+def show_placement_plan_link(folder_path: Path) -> None:
+    pdf_path = folder_path / PLACEMENT_PLAN_PDF
+    if not pdf_path.exists():
+        return
+    st.markdown(
+        (
+            f'<a href="{pdf_path.resolve().as_uri()}" target="_blank" '
+            'rel="noopener noreferrer">Open sensor installation plan PDF in a new tab</a>'
+        ),
+        unsafe_allow_html=True,
+    )
 
 
 def browse_for_tdms_folder(initial_folder: str) -> tuple[str | None, str | None]:
@@ -571,6 +683,7 @@ def main() -> None:
         active_catalog = _merge_catalogs(catalog_rows)
         active_catalog = active_catalog[active_catalog["active"]]
         active_catalog = enrich_sensor_catalog(active_catalog)
+        rosette_groups = rosette_group_catalog(active_catalog)
         traffic_candidates = active_catalog[
             active_catalog["sensor_type"].isin(["Accelerometer", "Quarterarm", "Half Bridge I"])
         ]["channel"].tolist()
@@ -583,6 +696,11 @@ def main() -> None:
             default=[item for item in sensor_types if item != "Time"],
             help="Filter channel pickers by sensor family. Accelerometers are usually best for vibration and traffic bursts; bridge channels are useful for strain-like response and slow trends.",
         )
+        if not rosette_groups.empty:
+            st.caption(
+                f"Detected {len(rosette_groups)} complete rosette strain-gage group(s) "
+                "with horizontal, vertical, and diagonal channels."
+            )
         with st.expander("Anomaly Model Settings", expanded=False):
             group_min_channels = st.number_input(
                 "Channels required to report a group shift",
@@ -725,11 +843,31 @@ def main() -> None:
         st.subheader("Sensor Catalog Across Selection")
         show_dataframe(active_catalog)
 
+        if not rosette_groups.empty:
+            st.subheader("Rosette Strain-Gage Groups")
+            st.caption(
+                "Complete groups combine the horizontal, vertical, and diagonal "
+                "strain-gage channels at the same location."
+            )
+            show_dataframe(
+                rosette_groups[
+                    [
+                        "label",
+                        "channels_display",
+                        "longitudinal_location",
+                        "side_of_bridge",
+                        "sensor_designation",
+                        "orientation_set",
+                    ]
+                ]
+            )
+
         st.subheader("Sensor Placement Map")
         st.caption(
             "Sensor locations are decoded from the BDI installation-plan naming scheme. "
             "Locations 1-8 are on the south fixed span; locations 9-10 are on the south tower."
         )
+        show_placement_plan_link(folder_path)
         st.plotly_chart(
             sensor_location_figure(active_catalog, title="Decoded Sensor Placement"),
             use_container_width=True,
@@ -757,13 +895,40 @@ def main() -> None:
         selectable = active_catalog[
             active_catalog["sensor_type"].isin(selected_types)
         ]["channel"].tolist()
-        default_channels = selectable[: min(6, len(selectable))]
-        channels = st.multiselect(
-            "Channels",
-            selectable,
-            default=default_channels,
-            help="Choose a small set of channels to compare. Mixing sensor types can put very different units/scales on the same axis.",
+        focus_options = ["Rosette groups", "Channels"] if not rosette_groups.empty else ["Channels"]
+        channel_focus = st.radio(
+            "Focus",
+            focus_options,
+            horizontal=True,
+            help="Use rosette groups to inspect the horizontal, vertical, and diagonal strain gages at a location together.",
         )
+        selected_rosettes: list[str] = []
+        rosette_channel_map: dict[str, str] = {}
+        if channel_focus == "Rosette groups":
+            rosette_labels = rosette_groups["label"].tolist()
+            selected_rosettes = st.multiselect(
+                "Rosette groups",
+                rosette_labels,
+                default=rosette_labels[:1],
+                help="Each group expands to its horizontal, vertical, and diagonal strain-gage channels.",
+            )
+            channels = rosette_channels_for_labels(rosette_groups, selected_rosettes)
+            for _, group in rosette_groups[
+                rosette_groups["label"].isin(selected_rosettes)
+            ].iterrows():
+                for channel in group["channels"]:
+                    rosette_channel_map[channel] = group["label"]
+            group_table = selected_rosette_group_table(rosette_groups, selected_rosettes)
+            if not group_table.empty:
+                show_dataframe(group_table)
+        else:
+            default_channels = selectable[: min(6, len(selectable))]
+            channels = st.multiselect(
+                "Channels",
+                selectable,
+                default=default_channels,
+                help="Choose a small set of channels to compare. Mixing sensor types can put very different units/scales on the same axis.",
+            )
         if channels:
             max_points = st.slider(
                 "Max plotted points",
@@ -829,13 +994,17 @@ def main() -> None:
                 var_name="channel",
                 value_name="value",
             )
+            hover_data = ["timestamp", "source_file"]
+            if rosette_channel_map:
+                long["rosette_group"] = long["channel"].map(rosette_channel_map)
+                hover_data.append("rosette_group")
             fig = px.line(
                 long,
                 x="timestamp_eastern",
                 y="value",
                 color="channel",
                 labels={"timestamp_eastern": BRIDGE_TIME_LABEL},
-                hover_data=["timestamp", "source_file"],
+                hover_data=hover_data,
             )
             fig.update_layout(height=560, legend_title_text="")
             if show_data_gaps:
@@ -849,7 +1018,7 @@ def main() -> None:
                 )
             st.plotly_chart(fig, use_container_width=True)
         else:
-            st.info("Select one or more channels.")
+            st.info("Select one or more channels or rosette groups.")
 
         st.subheader("Combined Channel Summary")
         summary = session_cached(
@@ -864,15 +1033,39 @@ def main() -> None:
             "Events start as rolling-RMS bursts, then are classified as traffic/vibration, boat collision or impact candidates, or drawbridge-operation-like events. "
             "Impact and behavior reports require support from correlated channel groups."
         )
-        selected_event_channels = st.multiselect(
-            "Event channels",
-            traffic_candidates,
-            default=[
-                channel for channel in traffic_candidates if channel.startswith("A-")
-            ]
-            or traffic_candidates[:4],
-            help="Start with accelerometers for traffic/vibration. Add strain or bridge channels to see whether structural response lines up with vibration bursts.",
+        event_focus_options = ["Channels", "Rosette groups"] if not rosette_groups.empty else ["Channels"]
+        event_focus = st.radio(
+            "Event channel focus",
+            event_focus_options,
+            horizontal=True,
+            help="Rosette groups expand to their horizontal, vertical, and diagonal strain-gage channels.",
         )
+        if event_focus == "Rosette groups":
+            event_rosette_labels = rosette_groups["label"].tolist()
+            selected_event_rosettes = st.multiselect(
+                "Event rosette groups",
+                event_rosette_labels,
+                default=event_rosette_labels[:1],
+                help="Use complete rosette groups when reviewing strain response around known event windows.",
+            )
+            selected_event_channels = rosette_channels_for_labels(
+                rosette_groups, selected_event_rosettes
+            )
+            event_group_table = selected_rosette_group_table(
+                rosette_groups, selected_event_rosettes
+            )
+            if not event_group_table.empty:
+                show_dataframe(event_group_table)
+        else:
+            selected_event_channels = st.multiselect(
+                "Event channels",
+                traffic_candidates,
+                default=[
+                    channel for channel in traffic_candidates if channel.startswith("A-")
+                ]
+                or traffic_candidates[:4],
+                help="Start with accelerometers for traffic/vibration. Add strain or bridge channels to see whether structural response lines up with vibration bursts.",
+            )
         event_setting_cols = st.columns(3)
         event_setting_cols[0].metric("RMS window", f"{event_window_seconds}s")
         event_setting_cols[1].metric("Threshold sigma", f"{event_threshold_sigma:.1f}")
@@ -976,6 +1169,7 @@ def main() -> None:
                     "where the strongest supporting channels are physically located."
                 )
             st.subheader("Selected Event Sensor Locations")
+            show_placement_plan_link(folder_path)
             st.plotly_chart(
                 sensor_location_figure(
                     active_catalog,
@@ -1031,7 +1225,8 @@ def main() -> None:
     elif page == "Correlation Groups":
         st.subheader("Correlated Sensor Channel Groups")
         st.caption(
-            "Groups are discovered from channels whose selected metric moves together over the selected time range. "
+            "Groups include complete rosette strain-gage sets plus channels whose "
+            "selected metric moves together over the selected time range. "
             f"These groups are used to validate reported shifts, requiring at least {int(group_min_channels)} agreeing channels."
         )
         corr_result = get_correlation_result_from_store(
@@ -1088,7 +1283,8 @@ def main() -> None:
         st.subheader("Anomaly Review and Reportable Shifts")
         st.caption(
             "This view separates raw event candidates from reportable behavior shifts. "
-            "A shift is reported only when at least three channels in the same correlated group show compatible abnormal movement."
+            "A shift is reported only when at least three channels in the same "
+            "rosette or correlated group show compatible abnormal movement."
         )
         anomaly_cols = st.columns(2)
         shift_window = anomaly_cols[0].selectbox(
@@ -1185,6 +1381,7 @@ def main() -> None:
                 "Highlighted sensors are channels that support one or more urgent "
                 "boat collision / impact candidates in the selected range."
             )
+            show_placement_plan_link(folder_path)
             st.plotly_chart(
                 sensor_location_figure(
                     active_catalog,
@@ -1223,12 +1420,42 @@ def main() -> None:
         trend_channels = active_catalog[
             active_catalog["sensor_type"].isin(selected_types)
         ]["channel"].tolist()
-        chosen_trends = st.multiselect(
-            "Trend channels",
-            trend_channels,
-            default=trend_channels[: min(6, len(trend_channels))],
-            help="Choose channels to trend over the selected time range. Select related channels together, such as east/west or matching orientations.",
+        trend_focus_options = ["Rosette groups", "Channels"] if not rosette_groups.empty else ["Channels"]
+        trend_focus = st.radio(
+            "Trend focus",
+            trend_focus_options,
+            horizontal=True,
+            help="Use rosette groups to trend the horizontal, vertical, and diagonal strain gages at a location together.",
         )
+        trend_rosette_map: dict[str, str] = {}
+        if trend_focus == "Rosette groups":
+            trend_rosette_labels = rosette_groups["label"].tolist()
+            selected_trend_rosettes = st.multiselect(
+                "Trend rosette groups",
+                trend_rosette_labels,
+                default=trend_rosette_labels[:1],
+                help="Each group expands to its horizontal, vertical, and diagonal strain-gage channels.",
+            )
+            chosen_trends = rosette_channels_for_labels(
+                rosette_groups, selected_trend_rosettes
+            )
+            for _, group in rosette_groups[
+                rosette_groups["label"].isin(selected_trend_rosettes)
+            ].iterrows():
+                for channel in group["channels"]:
+                    trend_rosette_map[channel] = group["label"]
+            trend_group_table = selected_rosette_group_table(
+                rosette_groups, selected_trend_rosettes
+            )
+            if not trend_group_table.empty:
+                show_dataframe(trend_group_table)
+        else:
+            chosen_trends = st.multiselect(
+                "Trend channels",
+                trend_channels,
+                default=trend_channels[: min(6, len(trend_channels))],
+                help="Choose channels to trend over the selected time range. Select related channels together, such as east/west or matching orientations.",
+            )
         metric = st.selectbox(
             "Metric",
             ["rms", "peak_to_peak", "mean", "std", "min", "max"],
@@ -1291,13 +1518,17 @@ def main() -> None:
             if show_data_gaps:
                 chart_data = insert_metric_plot_breaks(chart_data, gaps, metric)
             chart_data = with_bridge_timestamp(chart_data)
+            hover_data = ["timestamp"]
+            if trend_rosette_map:
+                chart_data["rosette_group"] = chart_data["channel"].map(trend_rosette_map)
+                hover_data.append("rosette_group")
             fig = px.line(
                 chart_data,
                 x="timestamp_eastern",
                 y=metric,
                 color="channel",
                 labels={"timestamp_eastern": BRIDGE_TIME_LABEL},
-                hover_data=["timestamp"],
+                hover_data=hover_data,
             )
             fig.update_layout(height=520, legend_title_text="")
             if show_data_gaps:
@@ -1330,8 +1561,8 @@ def main() -> None:
             st.plotly_chart(fig, use_container_width=True)
         elif not chosen_trends:
             show_empty_state(
-                "No trend channels are selected.",
-                "Select one or more channels, or choose additional sensor types in the sidebar.",
+                "No trend channels or rosette groups are selected.",
+                "Select one or more channels or rosette groups, or choose additional sensor types in the sidebar.",
             )
         else:
             show_empty_state(

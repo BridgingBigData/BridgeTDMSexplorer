@@ -62,6 +62,16 @@ Use the sidebar `View` selector to switch between pages. Only the selected view
 is computed, which keeps display-setting changes responsive on large TDMS
 selections.
 
+Complete rosette strain-gage groups are detected from active `SG-...-H`,
+`SG-...-V`, and `SG-...-D` channels that share the same location, side, and
+rosette designation. The `Files` view lists these groups, and the raw signal,
+event detection, and trend views can focus on rosette groups instead of requiring
+the three component channels to be selected one by one. The anomaly model also
+treats complete rosettes as domain-confirmed groups, so all three orientations
+can confirm a rosette-specific shift without relying only on learned
+correlation. `VGP_...` and `VGT_...` channels are decoded as TTDS vertical guide
+post sensors and are not used as rosette-group evidence.
+
 ## Anomaly Detection
 
 The app includes an explainable first-pass anomaly workflow:
@@ -71,8 +81,9 @@ The app includes an explainable first-pass anomaly workflow:
 - `Anomaly Review`: separates urgent boat collision / impact candidates from reportable operation or behavior shifts.
 
 Behavior shifts are gated by group support. By default, a reported shift requires
-at least three channels in the same correlated group to show compatible abnormal
-movement. This helps avoid false alarms from a noisy or failed single sensor.
+at least three channels in the same rosette or correlated group to show
+compatible abnormal movement. This helps avoid false alarms from a noisy or
+failed single sensor.
 
 Sensor placement maps are decoded from the BDI installation-plan naming scheme.
 Locations 1-8 are on the south fixed span; locations 9-10 are on the south tower.
