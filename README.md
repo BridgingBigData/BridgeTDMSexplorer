@@ -44,6 +44,11 @@ cached time range. Use the `Analysis Time Range` start/end date and time inputs
 to choose the interval to query. When more than a week of data is available, the
 default launch range is the latest week.
 
+TDMS timestamps are stored and queried as UTC in the cache. The dashboard range
+controls, chart axes, event timelines, and added `*_eastern` table/download
+columns show the same moments in Eastern bridge local time, including daylight
+saving time changes.
+
 TDMS discovery is recursive, so a folder organized like `tdms_files/` with
 subfolders such as `tdms_files_2026-06-17_07-00-01/` and
 `tdms_files_2026-06-18_07-00-01/` can be loaded from the parent folder.

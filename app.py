@@ -54,6 +54,18 @@ EVENT_COLORS = {
 }
 
 DEFAULT_EVENT_COLOR = "#64748b"
+UTC_TIME_ZONE = "UTC"
+BRIDGE_TIME_ZONE = "America/New_York"
+BRIDGE_TIME_LABEL = "Eastern bridge time"
+TIME_DISPLAY_COLUMNS = (
+    "timestamp",
+    "start",
+    "end",
+    "sample_start",
+    "sample_end",
+    "gap_start",
+    "gap_end",
+)
 
 REVIEW_WORKFLOW = [
     "Files",
@@ -235,6 +247,65 @@ def set_time_range(start: datetime, end: datetime) -> None:
     st.session_state["end_time"] = end.time()
 
 
+def utc_to_bridge_time(value) -> datetime:
+    timestamp = pd.Timestamp(value)
+    if timestamp.tzinfo is None:
+        timestamp = timestamp.tz_localize(UTC_TIME_ZONE)
+    else:
+        timestamp = timestamp.tz_convert(UTC_TIME_ZONE)
+    return timestamp.tz_convert(BRIDGE_TIME_ZONE).tz_localize(None).to_pydatetime()
+
+
+def bridge_time_to_utc(value) -> datetime:
+    timestamp = pd.Timestamp(value)
+    if timestamp.tzinfo is None:
+        timestamp = timestamp.tz_localize(BRIDGE_TIME_ZONE)
+    else:
+        timestamp = timestamp.tz_convert(BRIDGE_TIME_ZONE)
+    return timestamp.tz_convert(UTC_TIME_ZONE).tz_localize(None).to_pydatetime()
+
+
+def format_bridge_time(value) -> str:
+    timestamp = pd.Timestamp(value)
+    if timestamp.tzinfo is None:
+        timestamp = timestamp.tz_localize(UTC_TIME_ZONE)
+    else:
+        timestamp = timestamp.tz_convert(UTC_TIME_ZONE)
+    return timestamp.tz_convert(BRIDGE_TIME_ZONE).strftime("%Y-%m-%d %H:%M:%S %Z")
+
+
+def utc_series_to_bridge_time(series: pd.Series) -> pd.Series:
+    timestamps = pd.to_datetime(series, errors="coerce")
+    if timestamps.empty:
+        return timestamps
+    if timestamps.dt.tz is None:
+        timestamps = timestamps.dt.tz_localize(UTC_TIME_ZONE)
+    else:
+        timestamps = timestamps.dt.tz_convert(UTC_TIME_ZONE)
+    return timestamps.dt.tz_convert(BRIDGE_TIME_ZONE).dt.tz_localize(None)
+
+
+def bridge_display_frame(frame: pd.DataFrame) -> pd.DataFrame:
+    if frame.empty:
+        return frame
+    display = frame.copy()
+    for column in TIME_DISPLAY_COLUMNS:
+        if column not in display or f"{column}_eastern" in display:
+            continue
+        eastern = utc_series_to_bridge_time(display[column])
+        insert_at = display.columns.get_loc(column)
+        display.insert(insert_at, f"{column}_eastern", eastern)
+    return display
+
+
+def with_bridge_timestamp(frame: pd.DataFrame, column: str = "timestamp") -> pd.DataFrame:
+    if frame.empty or column not in frame:
+        return frame
+    display = frame.copy()
+    display[f"{column}_eastern"] = utc_series_to_bridge_time(display[column])
+    return display
+
+
 def browse_for_tdms_folder(initial_folder: str) -> tuple[str | None, str | None]:
     initial_path = Path(initial_folder).expanduser() if initial_folder else Path.home()
     if not initial_path.exists():
@@ -400,16 +471,27 @@ def main() -> None:
 
         min_time = min_time.to_pydatetime()
         max_time = max_time.to_pydatetime()
-        default_start = max(min_time, max_time - timedelta(days=7))
+        min_time_eastern = utc_to_bridge_time(min_time)
+        max_time_eastern = utc_to_bridge_time(max_time)
+        default_start_eastern = max(min_time_eastern, max_time_eastern - timedelta(days=7))
         range_key = (str(cache_dir), min_time, max_time)
         if st.session_state.get("range_key") != range_key:
-            set_time_range(default_start, max_time)
+            set_time_range(default_start_eastern, max_time_eastern)
             st.session_state["range_key"] = range_key
 
         st.markdown("**Available Cached Time Range**")
-        st.caption(f"{min_time:%Y-%m-%d %H:%M:%S} to {max_time:%Y-%m-%d %H:%M:%S}")
+        st.caption(
+            f"{format_bridge_time(min_time)} to {format_bridge_time(max_time)}"
+        )
+        st.caption(
+            f"UTC source data: {min_time:%Y-%m-%d %H:%M:%S} to {max_time:%Y-%m-%d %H:%M:%S}"
+        )
 
         with st.expander("Analysis Time Range", expanded=True):
+            st.caption(
+                "TDMS timestamps are stored and queried in UTC. These controls use "
+                "Eastern bridge local time."
+            )
             range_preset = st.selectbox(
                 "Quick range",
                 ["Latest hour", "Latest day", "Latest week", "All cached"],
@@ -418,44 +500,55 @@ def main() -> None:
             )
             if st.button("Apply quick range", use_container_width=True):
                 if range_preset == "Latest hour":
-                    set_time_range(max(min_time, max_time - timedelta(hours=1)), max_time)
+                    set_time_range(
+                        max(min_time_eastern, max_time_eastern - timedelta(hours=1)),
+                        max_time_eastern,
+                    )
                 elif range_preset == "Latest day":
-                    set_time_range(max(min_time, max_time - timedelta(days=1)), max_time)
+                    set_time_range(
+                        max(min_time_eastern, max_time_eastern - timedelta(days=1)),
+                        max_time_eastern,
+                    )
                 elif range_preset == "Latest week":
-                    set_time_range(max(min_time, max_time - timedelta(days=7)), max_time)
+                    set_time_range(
+                        max(min_time_eastern, max_time_eastern - timedelta(days=7)),
+                        max_time_eastern,
+                    )
                 else:
-                    set_time_range(min_time, max_time)
+                    set_time_range(min_time_eastern, max_time_eastern)
 
             start_date = st.date_input(
-                "Start date",
-                min_value=min_time.date(),
-                max_value=max_time.date(),
+                "Start date (Eastern)",
+                min_value=min_time_eastern.date(),
+                max_value=max_time_eastern.date(),
                 key="start_date",
-                help="First recording start date to query from the local cache. The default is the latest week.",
+                help="First bridge-local date to query from the local cache. The default is the latest week.",
             )
             start_time = st.time_input(
-                "Start time",
+                "Start time (Eastern)",
                 key="start_time",
-                help="First recording start time to query from the local cache.",
+                help="First bridge-local time to query from the local cache.",
             )
             end_date = st.date_input(
-                "End date",
-                min_value=min_time.date(),
-                max_value=max_time.date(),
+                "End date (Eastern)",
+                min_value=min_time_eastern.date(),
+                max_value=max_time_eastern.date(),
                 key="end_date",
-                help="Last recording start date to query from the local cache.",
+                help="Last bridge-local date to query from the local cache.",
             )
             end_time = st.time_input(
-                "End time",
+                "End time (Eastern)",
                 key="end_time",
-                help="Last recording start time to query from the local cache.",
+                help="Last bridge-local time to query from the local cache.",
             )
 
-        selected_start = datetime.combine(start_date, start_time)
-        selected_end = datetime.combine(end_date, end_time)
-        if selected_start > selected_end:
+        selected_start_eastern = datetime.combine(start_date, start_time)
+        selected_end_eastern = datetime.combine(end_date, end_time)
+        if selected_start_eastern > selected_end_eastern:
             st.error("Start time must be before end time.")
             return
+        selected_start = bridge_time_to_utc(selected_start_eastern)
+        selected_end = bridge_time_to_utc(selected_end_eastern)
         selected_files = query_file_index(cache_dir, selected_start, selected_end)
         selected_files = selected_files[selected_files["status"].eq("ready")].copy()
         ignored_files = query_ignored_files(cache_dir)
@@ -599,7 +692,7 @@ def main() -> None:
 
     st.caption(
         "Cached data range: "
-        f"{min_time:%Y-%m-%d %H:%M:%S} to {max_time:%Y-%m-%d %H:%M:%S}. "
+        f"{format_bridge_time(min_time)} to {format_bridge_time(max_time)}. "
         "Analysis excludes version copies and decimated files; new files are added through ingestion."
     )
 
@@ -730,17 +823,19 @@ def main() -> None:
             )
             if show_data_gaps:
                 plot_data = insert_plot_breaks(plot_data, gaps, channels)
+            plot_data = with_bridge_timestamp(plot_data)
             long = plot_data.melt(
-                id_vars=["timestamp", "source_file"],
+                id_vars=["timestamp", "timestamp_eastern", "source_file"],
                 var_name="channel",
                 value_name="value",
             )
             fig = px.line(
                 long,
-                x="timestamp",
+                x="timestamp_eastern",
                 y="value",
                 color="channel",
-                hover_data=["source_file"],
+                labels={"timestamp_eastern": BRIDGE_TIME_LABEL},
+                hover_data=["timestamp", "source_file"],
             )
             fig.update_layout(height=560, legend_title_text="")
             if show_data_gaps:
@@ -863,7 +958,8 @@ def main() -> None:
                 "Inspect classified event",
                 event_families.index,
                 format_func=lambda idx: (
-                    f"{event_families.loc[idx, 'start']} - {event_families.loc[idx, 'event_family']}"
+                    f"{format_bridge_time(event_families.loc[idx, 'start'])} - "
+                    f"{event_families.loc[idx, 'event_family']}"
                 ),
             )
             event = event_families.loc[selected_event]
@@ -893,19 +989,26 @@ def main() -> None:
                 event_data = query_samples(
                     cache_dir, span_start, span_end, event_plot_channels
                 )
+                event_data = with_bridge_timestamp(event_data)
                 long_event_data = event_data.melt(
-                    id_vars=["timestamp", "source_file"],
+                    id_vars=["timestamp", "timestamp_eastern", "source_file"],
                     var_name="channel",
                     value_name="value",
                 )
                 fig = px.line(
                     long_event_data,
-                    x="timestamp",
+                    x="timestamp_eastern",
                     y="value",
                     color="channel",
-                    hover_data=["source_file"],
+                    labels={"timestamp_eastern": BRIDGE_TIME_LABEL},
+                    hover_data=["timestamp", "source_file"],
                 )
-                fig.add_vrect(x0=event["start"], x1=event["end"], fillcolor="red", opacity=0.18)
+                fig.add_vrect(
+                    x0=utc_to_bridge_time(event["start"]),
+                    x1=utc_to_bridge_time(event["end"]),
+                    fillcolor="red",
+                    opacity=0.18,
+                )
                 if show_data_gaps:
                     add_gap_bands(fig, gaps)
                 fig.update_layout(height=420)
@@ -1187,7 +1290,15 @@ def main() -> None:
             chart_data = features[features["channel"].isin(chosen_trends)]
             if show_data_gaps:
                 chart_data = insert_metric_plot_breaks(chart_data, gaps, metric)
-            fig = px.line(chart_data, x="timestamp", y=metric, color="channel")
+            chart_data = with_bridge_timestamp(chart_data)
+            fig = px.line(
+                chart_data,
+                x="timestamp_eastern",
+                y=metric,
+                color="channel",
+                labels={"timestamp_eastern": BRIDGE_TIME_LABEL},
+                hover_data=["timestamp"],
+            )
             fig.update_layout(height=520, legend_title_text="")
             if show_data_gaps:
                 add_gap_bands(fig, gaps)
@@ -1200,8 +1311,11 @@ def main() -> None:
                 )
             st.plotly_chart(fig, use_container_width=True)
 
-            heatmap_data = features[features["channel"].isin(chosen_trends)].pivot_table(
-                index="channel", columns="timestamp", values=metric
+            heatmap_frame = with_bridge_timestamp(
+                features[features["channel"].isin(chosen_trends)]
+            )
+            heatmap_data = heatmap_frame.pivot_table(
+                index="channel", columns="timestamp_eastern", values=metric
             )
             fig = go.Figure(
                 data=go.Heatmap(
@@ -1369,8 +1483,8 @@ def add_gap_bands(fig: go.Figure, gaps: pd.DataFrame) -> None:
         return
     for _, gap in gaps.iterrows():
         fig.add_vrect(
-            x0=gap["gap_start"],
-            x1=gap["gap_end"],
+            x0=utc_to_bridge_time(gap["gap_start"]),
+            x1=utc_to_bridge_time(gap["gap_end"]),
             fillcolor="#94a3b8",
             opacity=0.16,
             line_width=0,
@@ -1384,10 +1498,12 @@ def event_timeline_figure(events: pd.DataFrame) -> go.Figure:
         fig.update_layout(height=260)
         return fig
     timeline = normalize_event_timeline(events)
+    timeline["start_eastern"] = utc_series_to_bridge_time(timeline["start"])
+    timeline["end_eastern"] = utc_series_to_bridge_time(timeline["end"])
     fig = px.timeline(
         timeline,
-        x_start="start",
-        x_end="end",
+        x_start="start_eastern",
+        x_end="end_eastern",
         y="event_family",
         color="event_family",
         color_discrete_map=EVENT_COLORS,
@@ -1400,6 +1516,10 @@ def event_timeline_figure(events: pd.DataFrame) -> go.Figure:
             "channels",
             "rationale",
         ],
+        labels={
+            "start_eastern": BRIDGE_TIME_LABEL,
+            "end_eastern": BRIDGE_TIME_LABEL,
+        },
     )
     fig.update_yaxes(autorange="reversed", title="")
     fig.update_layout(
@@ -1441,8 +1561,8 @@ def add_event_overlays(fig: go.Figure, events: pd.DataFrame) -> None:
     for _, event in normalize_event_timeline(events).iterrows():
         family = event["event_family"]
         fig.add_vrect(
-            x0=event["start"],
-            x1=event["end"],
+            x0=utc_to_bridge_time(event["start"]),
+            x1=utc_to_bridge_time(event["end"]),
             fillcolor=EVENT_COLORS.get(family, DEFAULT_EVENT_COLOR),
             opacity=event_overlay_opacity(family),
             line_width=1 if family == "Group-confirmed behavior shift" else 0,
@@ -1507,7 +1627,15 @@ def add_relative_paths(frame: pd.DataFrame, root: Path) -> pd.DataFrame:
 def dataframe_config(frame: pd.DataFrame) -> dict:
     config = {}
     for column in frame.columns:
-        if column in {"timestamp", "start", "end", "sample_start", "sample_end"}:
+        if column in {
+            "timestamp",
+            "start",
+            "end",
+            "sample_start",
+            "sample_end",
+            "gap_start",
+            "gap_end",
+        } or column.endswith("_eastern"):
             config[column] = st.column_config.DatetimeColumn(column, format="YYYY-MM-DD HH:mm:ss")
         elif column in {"size_mb"}:
             config[column] = st.column_config.NumberColumn(column, format="%.2f MB")
@@ -1521,11 +1649,12 @@ def dataframe_config(frame: pd.DataFrame) -> dict:
 
 
 def show_dataframe(frame: pd.DataFrame, **kwargs) -> None:
+    display = bridge_display_frame(frame)
     st.dataframe(
-        frame,
+        display,
         use_container_width=True,
         hide_index=True,
-        column_config=dataframe_config(frame),
+        column_config=dataframe_config(display),
         **kwargs,
     )
 
@@ -1533,9 +1662,10 @@ def show_dataframe(frame: pd.DataFrame, **kwargs) -> None:
 def download_dataframe(label: str, frame: pd.DataFrame, filename: str) -> None:
     if frame.empty:
         return
+    export = bridge_display_frame(frame)
     st.download_button(
         label,
-        data=frame.to_csv(index=False).encode("utf-8"),
+        data=export.to_csv(index=False).encode("utf-8"),
         file_name=filename,
         mime="text/csv",
         use_container_width=True,
