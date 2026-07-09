@@ -118,7 +118,7 @@ def classify_event_families_from_events(
         start = cluster["start"].min()
         end = cluster["end"].max()
         duration_s = (end - start).total_seconds()
-        family, priority, rationale = _classify_event(
+        classification = _classify_event(
             support_count=support_count,
             grouped_support=grouped_support,
             peak_ratio=peak_ratio,
@@ -127,6 +127,9 @@ def classify_event_families_from_events(
             group_min_channels=group_min_channels,
             group_kind=str(strongest_group.get("group_kind", "")),
         )
+        if classification is None:
+            continue
+        family, priority, rationale = classification
         rows.append(
             {
                 "event_id": cluster_id,
@@ -145,6 +148,8 @@ def classify_event_families_from_events(
                 "rationale": rationale,
             }
         )
+    if not rows:
+        return _empty_event_families()
     return pd.DataFrame(rows)
 
 
@@ -439,7 +444,10 @@ def _classify_event(
     impact_ratio: float,
     group_min_channels: int,
     group_kind: str = "",
-) -> tuple[str, str, str]:
+) -> tuple[str, str, str] | None:
+    # Only boat-impact and drawbridge-operation candidates are tracked; plain
+    # traffic/vibration bursts are dropped to keep the timeline and Pi-class
+    # hardware focused on the two families that matter for review.
     if (
         support_count >= group_min_channels
         and grouped_support >= group_min_channels
@@ -465,17 +473,7 @@ def _classify_event(
                 else "Sustained coordinated response across a correlated group."
             ),
         )
-    if support_count >= group_min_channels:
-        return (
-            "Group-supported traffic/vibration event",
-            "review",
-            "Short burst supported by multiple channels.",
-        )
-    return (
-        "Single/few-channel traffic-like event",
-        "low",
-        "Short burst without three-channel group confirmation.",
-    )
+    return None
 
 
 def _channel_to_group(groups: pd.DataFrame) -> dict[str, int]:

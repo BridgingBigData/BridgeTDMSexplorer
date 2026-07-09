@@ -51,8 +51,6 @@ EVENT_COLORS = {
     "Group-confirmed behavior shift": "#111827",
     "Rosette-confirmed behavior shift": "#0f766e",
     "Rosette-confirmed operation-like shift": "#14b8a6",
-    "Group-supported traffic/vibration event": "#f59e0b",
-    "Single/few-channel traffic-like event": "#fbbf24",
 }
 
 DEFAULT_EVENT_COLOR = "#64748b"
@@ -1119,10 +1117,10 @@ def main() -> None:
         show_dataframe(summary)
 
     elif page == "Event Detection":
-        st.subheader("Traffic, Impact, and Drawbridge-Operation Event Detection")
+        st.subheader("Impact and Drawbridge-Operation Event Detection")
         st.caption(
-            "Events start as rolling-RMS bursts, then are classified as traffic/vibration, boat collision or impact candidates, or drawbridge-operation-like events. "
-            "Impact and behavior reports require support from correlated channel groups."
+            "Events start as rolling-RMS bursts, then are classified as boat collision / impact candidates or drawbridge-operation-like events. "
+            "Plain traffic/vibration bursts without group support are not tracked. Impact and operation reports require support from correlated channel groups."
         )
         event_focus_options = ["Channels", "Rosette groups"] if not rosette_groups.empty else ["Channels"]
         event_focus = st.radio(
