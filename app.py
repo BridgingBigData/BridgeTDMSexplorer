@@ -828,10 +828,10 @@ def main() -> None:
             event_impact_ratio = st.slider(
                 "Impact severity ratio",
                 1.5,
-                8.0,
-                3.0,
+                15.0,
+                6.0,
                 0.5,
-                help="A boat collision / impact candidate needs peak RMS at least this many times the event threshold, plus correlated multi-channel support.",
+                help="A boat collision / impact candidate needs peak RMS at least this many times the event threshold, plus correlated multi-channel support. Peak ratios form a smooth continuum from routine traffic up through rare severe bursts with no natural cutoff, so this is tuned high enough (default 6x) to keep the impact-candidate list rare; lower it only when reviewing a known incident window.",
             )
             st.caption(
                 "These settings are shared by Event Detection, plot overlays, and "
