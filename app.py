@@ -311,6 +311,34 @@ def with_bridge_timestamp(frame: pd.DataFrame, column: str = "timestamp") -> pd.
     return display
 
 
+TRACE_SCALE_MODES = {
+    "Raw values": "raw",
+    "Zero-baseline (subtract each channel's mean)": "zero_baseline",
+    "Normalized (z-score)": "zscore",
+}
+TRACE_SCALE_AXIS_LABELS = {
+    "raw": "Value",
+    "zero_baseline": "Value (baseline-centered)",
+    "zscore": "Value (z-score)",
+}
+
+
+def scale_channel_traces(
+    long_frame: pd.DataFrame, value_column: str, mode: str, channel_column: str = "channel"
+) -> pd.DataFrame:
+    if mode == "raw" or long_frame.empty:
+        return long_frame
+    scaled = long_frame.copy()
+    grouped = scaled.groupby(channel_column)[value_column]
+    if mode == "zero_baseline":
+        scaled[value_column] = scaled[value_column] - grouped.transform("mean")
+    elif mode == "zscore":
+        mean = grouped.transform("mean")
+        std = grouped.transform("std").replace(0, np.nan)
+        scaled[value_column] = (scaled[value_column] - mean) / std
+    return scaled
+
+
 def rosette_group_catalog(catalog: pd.DataFrame) -> pd.DataFrame:
     if catalog.empty or "sensor_family" not in catalog:
         return pd.DataFrame(
@@ -991,6 +1019,11 @@ def main() -> None:
                 1_000,
                 help="Controls visual downsampling only. Raise it for more detail; lower it for faster plotting over long time ranges.",
             )
+            raw_trace_scale = st.selectbox(
+                "Trace scaling",
+                list(TRACE_SCALE_MODES),
+                help="Rosette orientations and different sensor types often sit at very different baseline magnitudes. Scaling recenters each channel so relative movement is easier to compare.",
+            )
             overlay_raw_events = st.checkbox(
                 "Overlay detected events",
                 value=False,
@@ -1051,12 +1084,17 @@ def main() -> None:
             if rosette_channel_map:
                 long["rosette_group"] = long["channel"].map(rosette_channel_map)
                 hover_data.append("rosette_group")
+            scale_mode = TRACE_SCALE_MODES[raw_trace_scale]
+            long = scale_channel_traces(long, "value", scale_mode)
             fig = px.line(
                 long,
                 x="timestamp_eastern",
                 y="value",
                 color="channel",
-                labels={"timestamp_eastern": BRIDGE_TIME_LABEL},
+                labels={
+                    "timestamp_eastern": BRIDGE_TIME_LABEL,
+                    "value": TRACE_SCALE_AXIS_LABELS[scale_mode],
+                },
                 hover_data=hover_data,
             )
             fig.update_layout(height=560, legend_title_text="")
@@ -1532,6 +1570,11 @@ def main() -> None:
             f"Trend rows are computed with {trend_window} windows over the full selected data. "
             "Changing chart overlays only changes display bands; it does not change the trend calculations."
         )
+        trend_trace_scale = st.selectbox(
+            "Trace scaling",
+            list(TRACE_SCALE_MODES),
+            help="Rosette orientations and different sensor types often sit at very different baseline magnitudes. Scaling recenters each channel so relative movement is easier to compare.",
+        )
         overlay_trend_events = st.checkbox(
             "Overlay detected events on trend",
             value=False,
@@ -1588,12 +1631,17 @@ def main() -> None:
             if trend_rosette_map:
                 chart_data["rosette_group"] = chart_data["channel"].map(trend_rosette_map)
                 hover_data.append("rosette_group")
+            trend_scale_mode = TRACE_SCALE_MODES[trend_trace_scale]
+            chart_data = scale_channel_traces(chart_data, metric, trend_scale_mode)
             fig = px.line(
                 chart_data,
                 x="timestamp_eastern",
                 y=metric,
                 color="channel",
-                labels={"timestamp_eastern": BRIDGE_TIME_LABEL},
+                labels={
+                    "timestamp_eastern": BRIDGE_TIME_LABEL,
+                    metric: TRACE_SCALE_AXIS_LABELS[trend_scale_mode],
+                },
                 hover_data=hover_data,
             )
             fig.update_layout(height=520, legend_title_text="")
