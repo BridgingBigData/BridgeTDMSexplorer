@@ -534,7 +534,7 @@ def main() -> None:
             )
         if st.button(
             "Browse for TDMS folder",
-            use_container_width=True,
+            width="stretch",
         ):
             st.session_state.pop("folder_browser_error", None)
             selected_folder, browser_error = browse_for_tdms_folder(
@@ -552,7 +552,7 @@ def main() -> None:
                 value=st.session_state["tdms_folder"],
                 placeholder="/path/to/tdms_files",
             )
-            load_folder = st.form_submit_button("Load folder", use_container_width=True)
+            load_folder = st.form_submit_button("Load folder", width="stretch")
         if load_folder:
             set_tdms_folder(folder_entry)
 
@@ -574,7 +574,7 @@ def main() -> None:
             st.session_state.refresh_token = 0
         if st.button(
             "Rescan / ingest new files",
-            use_container_width=True,
+            width="stretch",
             help="Refresh the file list and ingest new or changed TDMS files into the local scalable cache.",
         ):
             st.cache_data.clear()
@@ -663,7 +663,7 @@ def main() -> None:
                 index=2,
                 help="Choose a common range, then apply it to the start and end controls below.",
             )
-            if st.button("Apply quick range", use_container_width=True):
+            if st.button("Apply quick range", width="stretch"):
                 if range_preset == "Latest hour":
                     set_time_range(
                         max(min_time_eastern, max_time_eastern - timedelta(hours=1)),
@@ -923,7 +923,7 @@ def main() -> None:
         show_placement_plan_link(folder_path)
         st.plotly_chart(
             sensor_location_figure(active_catalog, title="Decoded Sensor Placement"),
-            use_container_width=True,
+            width="stretch",
         )
 
         st.subheader("Detected Gaps")
@@ -1069,7 +1069,7 @@ def main() -> None:
                         raw_overlay_events["event_family"].isin(raw_overlay_families)
                     ],
                 )
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width="stretch")
         else:
             st.info("Select one or more channels or rosette groups.")
 
@@ -1187,7 +1187,7 @@ def main() -> None:
             )
             st.plotly_chart(
                 event_timeline_figure(event_families),
-                use_container_width=True,
+                width="stretch",
             )
 
             family_counts = event_families.groupby("event_family", as_index=False).size()
@@ -1198,7 +1198,7 @@ def main() -> None:
                 labels={"size": "events"},
             )
             fig.update_layout(height=360)
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width="stretch")
 
             selected_event = st.selectbox(
                 "Inspect classified event",
@@ -1229,7 +1229,7 @@ def main() -> None:
                     highlight_channels=event_plot_channels,
                     title=f"Supporting Sensor Locations - {event['event_family']}",
                 ),
-                use_container_width=True,
+                width="stretch",
             )
             show_dataframe(sensor_location_table(active_catalog, event_plot_channels))
             if event_plot_channels:
@@ -1259,7 +1259,7 @@ def main() -> None:
                 if show_data_gaps:
                     add_gap_bands(fig, gaps)
                 fig.update_layout(height=420)
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, width="stretch")
             else:
                 show_empty_state(
                     "No supporting channels from this event are available in the active catalog.",
@@ -1322,7 +1322,7 @@ def main() -> None:
                 )
             )
             fig.update_layout(height=680)
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width="stretch")
         with st.expander("Strongest channel pairs"):
             if corr_result.pairs.empty:
                 show_empty_state(
@@ -1385,10 +1385,23 @@ def main() -> None:
         impact_candidates = impact_candidates[
             impact_candidates["event_family"].eq("Boat collision / impact candidate")
         ]
-        review_cols = st.columns(3)
-        review_cols[0].metric("Reportable shifts", len(shifts))
-        review_cols[1].metric("Impact candidates", len(impact_candidates))
-        review_cols[2].metric("Required channel support", int(group_min_channels))
+        routine_shifts = shifts[~shifts["reportable"]] if not shifts.empty else shifts
+        reportable_shifts = shifts[shifts["reportable"]] if not shifts.empty else shifts
+        show_routine = st.checkbox(
+            "Show routine scheduled/on-demand bridge lifts",
+            value=False,
+            help=(
+                "Operation-like shifts that line up with the posted NH Memorial Bridge "
+                "lift schedule (every 30 min, 7am-7pm, May 15-Oct 31, or on signal at "
+                "other times) are auto-classified as routine and hidden by default."
+            ),
+        )
+        shifts_display = shifts if show_routine else reportable_shifts
+        review_cols = st.columns(4)
+        review_cols[0].metric("Reportable shifts", len(reportable_shifts))
+        review_cols[1].metric("Routine bridge lifts", len(routine_shifts))
+        review_cols[2].metric("Impact candidates", len(impact_candidates))
+        review_cols[3].metric("Required channel support", int(group_min_channels))
         st.caption(
             f"Shift review uses {shift_window} windows and robust z >= {z_threshold:.1f}. "
             f"Impact review uses the shared event settings: {event_window_seconds}s RMS, "
@@ -1396,16 +1409,16 @@ def main() -> None:
         )
 
         st.subheader("Reportable Operation / Behavior Shifts")
-        if shifts.empty:
+        if shifts_display.empty:
             show_empty_state(
                 "No reportable operation or behavior shifts met the group-support rule.",
                 "Try widening the time range, lowering the shift z-threshold, or reviewing Correlation Groups to confirm enough channels are grouped together.",
             )
         else:
-            show_dataframe(shifts)
+            show_dataframe(shifts_display)
             download_dataframe(
                 "Download reportable shifts CSV",
-                shifts,
+                shifts_display,
                 "reportable_behavior_shifts.csv",
             )
         st.subheader("Urgent Boat Collision / Impact Candidates")
@@ -1441,10 +1454,10 @@ def main() -> None:
                     highlight_channels=impact_channels,
                     title="Urgent Impact Candidate Sensor Locations",
                 ),
-                use_container_width=True,
+                width="stretch",
             )
             show_dataframe(sensor_location_table(active_catalog, impact_channels))
-        anomaly_timeline = anomaly_timeline_events(shifts, impact_candidates, shift_window)
+        anomaly_timeline = anomaly_timeline_events(shifts_display, impact_candidates, shift_window)
         if not anomaly_timeline.empty:
             st.subheader("Anomaly Timeline")
             st.caption(
@@ -1452,7 +1465,7 @@ def main() -> None:
             )
             st.plotly_chart(
                 event_timeline_figure(anomaly_timeline),
-                use_container_width=True,
+                width="stretch",
             )
 
     elif page == "Trends":
@@ -1593,7 +1606,7 @@ def main() -> None:
                         trend_overlay_events["event_family"].isin(trend_overlay_families)
                     ],
                 )
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width="stretch")
 
             heatmap_frame = with_bridge_timestamp(
                 features[features["channel"].isin(chosen_trends)]
@@ -1611,7 +1624,7 @@ def main() -> None:
                 )
             )
             fig.update_layout(height=420)
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width="stretch")
         elif not chosen_trends:
             show_empty_state(
                 "No trend channels or rosette groups are selected.",
@@ -1936,7 +1949,7 @@ def show_dataframe(frame: pd.DataFrame, **kwargs) -> None:
     display = bridge_display_frame(frame)
     st.dataframe(
         display,
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
         column_config=dataframe_config(display),
         **kwargs,
@@ -1952,7 +1965,7 @@ def download_dataframe(label: str, frame: pd.DataFrame, filename: str) -> None:
         data=export.to_csv(index=False).encode("utf-8"),
         file_name=filename,
         mime="text/csv",
-        use_container_width=True,
+        width="stretch",
     )
 
 

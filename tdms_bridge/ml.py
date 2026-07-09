@@ -7,6 +7,7 @@ import pandas as pd
 
 from tdms_bridge.locations import enrich_sensor_catalog
 from tdms_bridge.parser import detect_events, feature_windows
+from tdms_bridge.schedule import classify_operation_timing, to_bridge_local
 
 
 ROSETTE_ORIENTATIONS = {"H", "V", "D"}
@@ -230,7 +231,6 @@ def detect_operation_and_behavior_shifts_from_features(
                 "supporting_channels": len(support_channels),
                 "max_abs_z": float(frame["z_score"].abs().max()),
                 "channels": ", ".join(support_channels),
-                "reportable": True,
                 "rationale": (
                     _shift_rationale(
                         len(support_channels), group_kind, group_label, z_threshold, metric
@@ -240,7 +240,21 @@ def detect_operation_and_behavior_shifts_from_features(
         )
     if not rows:
         return _empty_shift_table()
-    return pd.DataFrame(rows).sort_values(["timestamp", "event_family"])
+    result = pd.DataFrame(rows).sort_values(["timestamp", "event_family"]).reset_index(drop=True)
+    return _apply_operation_timing(result)
+
+
+def _apply_operation_timing(shifts: pd.DataFrame) -> pd.DataFrame:
+    # Only mean-metric (operation-like) shifts get schedule-demoted; rms/peak_to_peak
+    # behavior shifts stay reportable regardless of timing since they reflect abnormal
+    # magnitude, not just the presence of a lift.
+    bridge_local = to_bridge_local(shifts["timestamp"])
+    timing = classify_operation_timing(bridge_local)
+    is_operation_like = shifts["metric"].eq("mean")
+    routine = is_operation_like & timing.isin(["scheduled", "on_demand"])
+    shifts["operation_timing"] = timing.where(is_operation_like, "n/a")
+    shifts["reportable"] = ~routine
+    return shifts
 
 
 def _correlation_pairs(matrix: pd.DataFrame) -> pd.DataFrame:
@@ -562,6 +576,7 @@ def _empty_shift_table() -> pd.DataFrame:
             "supporting_channels",
             "max_abs_z",
             "channels",
+            "operation_timing",
             "reportable",
             "rationale",
         ]
