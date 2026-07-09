@@ -1032,11 +1032,12 @@ def main() -> None:
             if overlay_raw_events:
                 raw_overlay_source = st.radio(
                     "Event overlay source",
-                    ["All event channels", "Selected plotted channels"],
+                    ["Selected plotted channels", "All event channels"],
                     horizontal=True,
                     help=(
-                        "Use all event channels for a stable event timeline, or only "
-                        "the plotted channels to focus on the visible traces."
+                        "Selected plotted channels is much cheaper to compute, especially "
+                        "on a Raspberry Pi. Use all event channels only when you need a "
+                        "stable event timeline independent of what's plotted."
                     ),
                 )
                 raw_event_channels = (
@@ -1583,11 +1584,12 @@ def main() -> None:
         if overlay_trend_events:
             trend_overlay_source = st.radio(
                 "Trend overlay source",
-                ["All event channels", "Selected trend channels"],
+                ["Selected trend channels", "All event channels"],
                 horizontal=True,
                 help=(
-                    "Use all event channels for a stable event timeline, or only "
-                    "the selected trend channels to focus overlays on those sensors."
+                    "Selected trend channels is much cheaper to compute, especially "
+                    "on a Raspberry Pi. Use all event channels only when you need a "
+                    "stable event timeline independent of what's trended."
                 ),
             )
             trend_event_channels = (

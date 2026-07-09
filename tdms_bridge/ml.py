@@ -89,6 +89,11 @@ def classify_event_families_from_events(
     for cluster_id, cluster in enumerate(_merge_events(events, merge_gap_seconds), start=1):
         support_channels = sorted(cluster["channel"].unique())
         support_count = len(support_channels)
+        if support_count < group_min_channels:
+            # Neither tracked family is reachable below group_min_channels, since
+            # grouped_support can never exceed support_count. Skip the group
+            # lookups below - this is most clusters, so it's the main cost saver.
+            continue
         group_ids = sorted(
             {channel_to_group.get(channel) for channel in support_channels}
             - {None}
