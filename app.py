@@ -1494,6 +1494,37 @@ def main() -> None:
                 use_container_width=True,
             )
             show_dataframe(sensor_location_table(active_catalog, impact_channels))
+
+            st.subheader("Inspect a Single Impact Candidate")
+            st.caption(
+                "Pick one candidate to see only the channels that supported it. "
+                "This reuses the already-loaded sensor catalog - no re-querying of raw "
+                "samples - so it stays cheap on Raspberry Pi-class hardware."
+            )
+            selected_candidate = st.selectbox(
+                "Impact candidate",
+                impact_candidates.index,
+                format_func=lambda idx: (
+                    f"{format_bridge_time(impact_candidates.loc[idx, 'start'])} "
+                    f"(peak ratio {impact_candidates.loc[idx, 'peak_ratio']:.1f}x, "
+                    f"{impact_candidates.loc[idx, 'supporting_channels']} channels)"
+                ),
+            )
+            candidate = impact_candidates.loc[selected_candidate]
+            candidate_channels = [
+                channel
+                for channel in event_channels(candidate)
+                if channel in active_catalog["channel"].tolist()
+            ]
+            st.plotly_chart(
+                sensor_location_figure(
+                    active_catalog,
+                    highlight_channels=candidate_channels,
+                    title=f"Supporting Sensor Locations - {format_bridge_time(candidate['start'])}",
+                ),
+                use_container_width=True,
+            )
+            show_dataframe(sensor_location_table(active_catalog, candidate_channels))
         anomaly_timeline = anomaly_timeline_events(shifts_display, impact_candidates, shift_window)
         if not anomaly_timeline.empty:
             st.subheader("Anomaly Timeline")
